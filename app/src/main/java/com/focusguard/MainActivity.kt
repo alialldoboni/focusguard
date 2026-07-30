@@ -1,0 +1,449 @@
+package com.focusguard
+
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Bundle
+import android.os.Build
+import android.provider.Settings
+import androidx.activity.ComponentActivity
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
+import com.focusguard.ui.theme.*
+import kotlinx.coroutines.launch
+
+class MainActivity : ComponentActivity() {
+    private var accessibilityEnabled by mutableStateOf(false)
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) {}
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+        
+        setContent {
+            FocusGuardTheme {
+                FocusGuardApp(
+                    accessibilityEnabled = accessibilityEnabled,
+                    onOpenAccessibility = { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
+                    onOpenNotifications = ::openNotificationSettingsOrRequest
+                )
+            }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        accessibilityEnabled = com.focusguard.service.FocusAccessibilityService.isEnabled(this)
+    }
+
+    private fun openNotificationSettingsOrRequest() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            return
+        }
+        startActivity(
+            Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+            }
+        )
+    }
+}
+
+@Composable
+fun FocusGuardApp(
+    accessibilityEnabled: Boolean,
+    onOpenAccessibility: () -> Unit,
+    onOpenNotifications: () -> Unit
+) {
+    var currentTab by remember { mutableIntStateOf(0) }
+    val scope = rememberCoroutineScope()
+
+    var serviceEnabled by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        serviceEnabled = com.focusguard.FocusGuardApplication.database.preferencesDao().getEnabled() ?: false
+    }
+
+    Scaffold(
+        containerColor = DarkBg,
+        bottomBar = {
+            Column {
+                HorizontalDivider(color = ForestBorder)
+                NavigationBar(containerColor = DarkBg, tonalElevation = 0.dp) {
+                    NavigationBarItem(
+                        icon = { Icon(if (currentTab == 0) Icons.Filled.Home else Icons.Outlined.Home, null) },
+                        label = { Text("Home") },
+                        selected = currentTab == 0,
+                        onClick = { currentTab = 0 },
+                        colors = editorialNavigationColors()
+                    )
+                    NavigationBarItem(
+                        icon = { Icon(if (currentTab == 1) Icons.Filled.Settings else Icons.Outlined.Settings, null) },
+                        label = { Text("Settings") },
+                        selected = currentTab == 1,
+                        onClick = { currentTab = 1 },
+                        colors = editorialNavigationColors()
+                    )
+                }
+            }
+        }
+    ) { padding ->
+        Box(modifier = Modifier.padding(padding)) {
+            when (currentTab) {
+                0 -> HomeTab(
+                    serviceEnabled = serviceEnabled,
+                    accessibilityEnabled = accessibilityEnabled,
+                    onToggle = {
+                        when {
+                            !accessibilityEnabled -> {
+                                if (!serviceEnabled) {
+                                    serviceEnabled = true
+                                    scope.launch {
+                                        FocusGuardApplication.database.preferencesDao()
+                                            .setEnabled(true)
+                                    }
+                                }
+                                onOpenAccessibility()
+                            }
+                            else -> {
+                                serviceEnabled = !serviceEnabled
+                                scope.launch {
+                                    FocusGuardApplication.database.preferencesDao()
+                                        .setEnabled(serviceEnabled)
+                                }
+                            }
+                        }
+                    }
+                )
+                1 -> SettingsTab(
+                    onOpenAccessibility = onOpenAccessibility,
+                    onOpenNotifications = onOpenNotifications
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun HomeTab(
+    serviceEnabled: Boolean,
+    accessibilityEnabled: Boolean,
+    onToggle: () -> Unit
+) {
+    val guardActive = serviceEnabled && accessibilityEnabled
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(DarkBg)
+            .padding(horizontal = 22.dp)
+            .verticalScroll(rememberScrollState())
+    ) {
+        Spacer(Modifier.height(28.dp))
+        BrandHeader()
+        Spacer(Modifier.height(38.dp))
+        Eyebrow("ATTENTION PROTECTION")
+        Spacer(Modifier.height(12.dp))
+        Text(
+            text = if (guardActive) "Your attention,\nprotected." else "Put your focus\nback in control.",
+            style = MaterialTheme.typography.headlineLarge,
+            color = TextPrimary
+        )
+        Spacer(Modifier.height(16.dp))
+        Text(
+            text = "FocusGuard evaluates what is visible on your screen and steps in when content stops being useful.",
+            style = MaterialTheme.typography.bodyLarge,
+            color = TextSecondary
+        )
+        Spacer(Modifier.height(30.dp))
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp),
+            border = BorderStroke(1.dp, if (guardActive) MintDeep else ForestBorder),
+            colors = CardDefaults.cardColors(containerColor = CardBg)
+        ) {
+            Column(modifier = Modifier.padding(22.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(9.dp)
+                            .background(
+                                if (guardActive) Mint else WarmSand,
+                                CircleShape
+                            )
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        text = when {
+                            guardActive -> "GUARD ACTIVE"
+                            serviceEnabled -> "SETUP REQUIRED"
+                            else -> "GUARD PAUSED"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (guardActive) Mint else WarmSand
+                    )
+                }
+                Spacer(Modifier.height(18.dp))
+                Text(
+                    text = when {
+                        guardActive -> "Protection is running"
+                        serviceEnabled -> "Finish accessibility setup"
+                        else -> "Protection is paused"
+                    },
+                    style = MaterialTheme.typography.titleLarge,
+                    color = TextPrimary
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = when {
+                        guardActive -> "Content is checked privately on this device."
+                        serviceEnabled -> "Accessibility access is needed to see and evaluate content."
+                        else -> "Enable FocusGuard to start filtering distractions."
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = TextSecondary
+                )
+                Spacer(Modifier.height(22.dp))
+                Button(
+                    onClick = onToggle,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (guardActive) ForestRaised else Mint,
+                        contentColor = if (guardActive) MintSoft else DeepForest
+                    ),
+                    border = if (guardActive) BorderStroke(1.dp, ForestBorder) else null,
+                    shape = RoundedCornerShape(9.dp),
+                    modifier = Modifier.fillMaxWidth().height(50.dp)
+                ) {
+                    Text(
+                        when {
+                            guardActive -> "Pause protection"
+                            serviceEnabled -> "Open accessibility"
+                            else -> "Enable protection"
+                        },
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.height(38.dp))
+        Eyebrow("HOW IT WORKS")
+        Spacer(Modifier.height(14.dp))
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp),
+            border = BorderStroke(1.dp, ForestBorder),
+            colors = CardDefaults.cardColors(containerColor = DeepForest)
+        ) {
+            Column {
+                Step("01", "Reads visible text, using on-device OCR when needed")
+                HorizontalDivider(color = ForestBorder)
+                Step("02", "Blocks social-media apps and short-form feeds")
+                HorizontalDivider(color = ForestBorder)
+                Step("03", "Allows YouTube only when the video looks useful")
+                HorizontalDivider(color = ForestBorder)
+                Step("04", "Explains the decision, then returns to Home")
+            }
+        }
+        Spacer(Modifier.height(30.dp))
+    }
+}
+
+@Composable
+fun Step(num: String, text: String) {
+    Row(
+        modifier = Modifier.padding(horizontal = 18.dp, vertical = 17.dp),
+        verticalAlignment = Alignment.Top
+    ) {
+        Text(
+            text = num,
+            color = Mint,
+            fontFamily = FontFamily.Monospace,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium
+        )
+        Spacer(Modifier.width(16.dp))
+        Text(
+            text = text,
+            color = TextSecondary,
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.weight(1f)
+        )
+    }
+}
+
+@Composable
+fun SettingsTab(
+    onOpenAccessibility: () -> Unit, onOpenNotifications: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(DarkBg)
+            .padding(horizontal = 22.dp)
+            .verticalScroll(rememberScrollState())
+    ) {
+        Spacer(Modifier.height(28.dp))
+        BrandHeader()
+        Spacer(Modifier.height(38.dp))
+        Eyebrow("CONTROL PANEL")
+        Spacer(Modifier.height(12.dp))
+        Text(
+            "Settings",
+            style = MaterialTheme.typography.headlineMedium,
+            color = TextPrimary
+        )
+        Spacer(Modifier.height(10.dp))
+        Text(
+            "Review the filtering policy and manage the access FocusGuard needs.",
+            style = MaterialTheme.typography.bodyLarge,
+            color = TextSecondary
+        )
+        Spacer(Modifier.height(30.dp))
+
+        Eyebrow("BLOCKING POLICY")
+        Spacer(Modifier.height(14.dp))
+        Card(
+            shape = RoundedCornerShape(14.dp),
+            border = BorderStroke(1.dp, ForestBorder),
+            colors = CardDefaults.cardColors(containerColor = CardBg)
+        ) {
+            Column(modifier = Modifier.padding(22.dp)) {
+                Text(
+                    "Useful long-form content only.",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = TextPrimary
+                )
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    "Social-media apps and short-form feeds are always blocked. " +
+                        "Normal YouTube videos are allowed only when their visible title " +
+                        "or description contains a clear educational or useful signal. " +
+                        "If the title cannot be verified, strict mode blocks the video " +
+                        "and explains why.",
+                    color = TextSecondary,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        }
+
+        Spacer(Modifier.height(30.dp))
+
+        Eyebrow("PERMISSIONS")
+        Spacer(Modifier.height(14.dp))
+        Card(
+            shape = RoundedCornerShape(14.dp),
+            border = BorderStroke(1.dp, ForestBorder),
+            colors = CardDefaults.cardColors(containerColor = DeepForest)
+        ) {
+            Column {
+                PermButton("Accessibility", "Read screen content", Icons.Filled.Settings, onOpenAccessibility)
+                HorizontalDivider(color = ForestBorder)
+                PermButton("Notifications", "Send alerts", Icons.Filled.Notifications, onOpenNotifications)
+            }
+        }
+        Spacer(Modifier.height(30.dp))
+    }
+}
+
+@Composable
+fun PermButton(title: String, desc: String, icon: ImageVector, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 18.dp, vertical = 18.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(icon, null, tint = Mint, modifier = Modifier.size(22.dp))
+        Spacer(Modifier.width(14.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, color = TextPrimary, style = MaterialTheme.typography.titleMedium)
+            Text(desc, color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
+        }
+        Icon(Icons.AutoMirrored.Filled.ArrowForward, null, tint = TextSecondary)
+    }
+}
+
+@Composable
+private fun BrandHeader() {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Surface(
+            modifier = Modifier.size(42.dp),
+            shape = RoundedCornerShape(11.dp),
+            color = Color.Transparent,
+            border = BorderStroke(1.dp, Mint)
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    Icons.Filled.Lock,
+                    contentDescription = null,
+                    tint = Mint,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+        }
+        Spacer(Modifier.width(12.dp))
+        Column {
+            Text(
+                "FocusGuard",
+                style = MaterialTheme.typography.titleLarge,
+                color = TextPrimary
+            )
+            Text(
+                "PRIVATE • ON-DEVICE",
+                style = MaterialTheme.typography.labelSmall,
+                color = TextSecondary
+            )
+        }
+    }
+}
+
+@Composable
+private fun Eyebrow(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelSmall,
+        color = Mint
+    )
+}
+
+@Composable
+private fun editorialNavigationColors() = NavigationBarItemDefaults.colors(
+    selectedIconColor = Mint,
+    selectedTextColor = Mint,
+    indicatorColor = ForestRaised,
+    unselectedIconColor = TextSecondary,
+    unselectedTextColor = TextSecondary
+)

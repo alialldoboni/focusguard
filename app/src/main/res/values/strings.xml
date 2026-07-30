@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">FocusGuard</string>
+    <string name="accessibility_service_description">
+        FocusGuard monitors your screen activity using on-device AI to protect your focus.
+        It learns your habits, detects doomscrolling, and intervenes when needed.
+        All processing happens locally on your device.
+    </string>
+    <string name="accessibility_enabled">true</string>
+</resources>

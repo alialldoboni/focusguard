@@ -1,0 +1,3 @@
+<resources>
+    <bool name="accessibility_enabled">true</bool>
+</resources>
