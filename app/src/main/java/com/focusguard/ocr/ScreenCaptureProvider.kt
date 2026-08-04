@@ -11,6 +11,7 @@ import kotlin.coroutines.resume
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Captures the current screen through the accessibility service and returns a
@@ -32,7 +33,21 @@ class ScreenCaptureProvider(private val service: AccessibilityService) : Capture
 
     suspend fun captureDownscaled(maxDim: Int = DEFAULT_MAX_DIM): Bitmap? =
         withContext(Dispatchers.Default) {
-            val result = captureScreenshot() ?: return@withContext null
+            // Hard timeout: AccessibilityService.takeScreenshot() may never invoke
+            // its callback (capability not granted, secure window, OEM quirk). Without
+            // this, the continuation would suspend forever and wedge the whole OCR
+            // pipeline (in-flight marker + mutex held), stalling every future scan.
+            val result = withTimeoutOrNull(SCREENSHOT_TIMEOUT_MS) {
+                captureScreenshot()
+            }
+            if (result == null) {
+                android.util.Log.d(
+                    "FocusGuard",
+                    "Path B: Screenshot capture timed out after " +
+                        "${SCREENSHOT_TIMEOUT_MS}ms or failed (status: null)"
+                )
+                return@withContext null
+            }
             var wrapped: Bitmap? = null
             var source: Bitmap? = null
             var scaled: Bitmap? = null
@@ -60,6 +75,10 @@ class ScreenCaptureProvider(private val service: AccessibilityService) : Capture
                 executor,
                 object : TakeScreenshotCallback {
                     override fun onSuccess(result: ScreenshotResult) {
+                        android.util.Log.d(
+                            "FocusGuard",
+                            "Path B: Screenshot callback received, status: success"
+                        )
                         if (cont.isActive) {
                             cont.resume(result)
                         } else {
@@ -68,6 +87,11 @@ class ScreenCaptureProvider(private val service: AccessibilityService) : Capture
                     }
 
                     override fun onFailure(errorCode: Int) {
+                        android.util.Log.d(
+                            "FocusGuard",
+                            "Path B: Screenshot callback received, status: null " +
+                                "(errorCode=$errorCode)"
+                        )
                         if (cont.isActive) cont.resume(null)
                     }
                 }
@@ -76,6 +100,7 @@ class ScreenCaptureProvider(private val service: AccessibilityService) : Capture
 
     companion object {
         const val DEFAULT_MAX_DIM = 1280
+        const val SCREENSHOT_TIMEOUT_MS = 5_000L
 
         internal fun downscaleSize(width: Int, height: Int, maxDim: Int): Pair<Int, Int> {
             val longest = maxOf(width, height)

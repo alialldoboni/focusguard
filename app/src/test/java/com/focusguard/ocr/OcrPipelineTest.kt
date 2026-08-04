@@ -57,4 +57,26 @@ class OcrPipelineTest {
         assertEquals(OcrResult.Skipped, pipeline.recognize("pkg"))
         assertEquals(1, captureCount)
     }
+
+    @Test
+    fun hungCaptureTimesOutAndReleasesPipeline() = runBlocking {
+        val neverCompletes = CompletableDeferred<Bitmap?>()
+        val pipeline = OcrPipeline(
+            object : CaptureSource {
+                override suspend fun capture(): Bitmap? = neverCompletes.await()
+            },
+            object : TextRecognizer {
+                override suspend fun recognize(bitmap: Bitmap): String = ""
+            },
+            attemptTimeoutMs = 200
+        )
+
+        // A capture that never invokes its callback must time out instead of
+        // holding inFlight/the mutex forever.
+        assertEquals(OcrResult.NoText, pipeline.recognize("pkg"))
+
+        // The pipeline is NOT wedged: the immediate retry returns a decision
+        // (cooldown -> Skipped) instead of hanging forever.
+        assertEquals(OcrResult.Skipped, pipeline.recognize("pkg"))
+    }
 }

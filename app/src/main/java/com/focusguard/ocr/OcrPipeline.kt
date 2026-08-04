@@ -5,6 +5,7 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 
 fun interface CaptureSource {
     suspend fun capture(): Bitmap?
@@ -39,7 +40,8 @@ sealed interface OcrResult {
  */
 class OcrPipeline(
     private val captureSource: CaptureSource,
-    private val textRecognizer: TextRecognizer
+    private val textRecognizer: TextRecognizer,
+    private val attemptTimeoutMs: Long = DEFAULT_ATTEMPT_TIMEOUT_MS
 ) {
 
     private val mutex = Mutex()
@@ -51,39 +53,45 @@ class OcrPipeline(
         val now = System.nanoTime()
         if (now - lastAttemptNanos.get() < COOLDOWN_NANOS) return OcrResult.Skipped
 
-        return mutex.withLock {
-            if (!inFlight.compareAndSet(null, packageName)) {
-                return@withLock OcrResult.Skipped
-            }
-            try {
-                val bitmap = try {
-                    captureSource.capture()
-                } catch (_: Exception) {
-                    null
-                } ?: return@withLock OcrResult.NoText
+        // Hard ceiling on a single attempt. If capture or OCR ever hangs, the
+        // attempt is cancelled, the mutex is released and inFlight is reset in
+        // the inner `finally`, so a bad frame can never wedge the pipeline.
+        return withTimeoutOrNull(attemptTimeoutMs) {
+            mutex.withLock {
+                if (!inFlight.compareAndSet(null, packageName)) {
+                    return@withLock OcrResult.Skipped
+                }
                 try {
-                    val text = try {
-                        textRecognizer.recognize(bitmap)
+                    val bitmap = try {
+                        captureSource.capture()
                     } catch (_: Exception) {
-                        ""
-                    }
-                    if (text.isEmpty()) {
-                        OcrResult.NoText
-                    } else {
-                        OcrResult.Text(text)
+                        null
+                    } ?: return@withLock OcrResult.NoText
+                    try {
+                        val text = try {
+                            textRecognizer.recognize(bitmap)
+                        } catch (_: Exception) {
+                            ""
+                        }
+                        if (text.isEmpty()) {
+                            OcrResult.NoText
+                        } else {
+                            OcrResult.Text(text)
+                        }
+                    } finally {
+                        bitmap.recycle()
                     }
                 } finally {
-                    bitmap.recycle()
+                    lastAttemptNanos.set(System.nanoTime())
+                    inFlight.set(null)
                 }
-            } finally {
-                lastAttemptNanos.set(System.nanoTime())
-                inFlight.set(null)
             }
-        }
+        } ?: OcrResult.NoText
     }
 
     companion object {
         const val COOLDOWN_MS = 5_000L
         const val COOLDOWN_NANOS = COOLDOWN_MS * 1_000_000L
+        const val DEFAULT_ATTEMPT_TIMEOUT_MS = 10_000L
     }
 }

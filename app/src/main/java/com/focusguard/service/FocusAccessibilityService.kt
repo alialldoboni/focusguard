@@ -45,16 +45,27 @@ import com.focusguard.ocr.OcrResult
 import com.focusguard.ocr.OcrTextRecognizer
 import com.focusguard.ocr.ScreenCaptureProvider
 import com.focusguard.tracker.ScreenTimeTracker
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class FocusAccessibilityService : AccessibilityService() {
 
-    private val serviceJob = Job()
-    private val scope = CoroutineScope(Dispatchers.Main + serviceJob)
+    private val serviceJob = SupervisorJob()
+    private val scope = CoroutineScope(
+        Dispatchers.Main +
+            serviceJob +
+            CoroutineExceptionHandler { _, throwable ->
+                android.util.Log.e(
+                    "FocusGuard",
+                    "Scan loop crashed; continuing",
+                    throwable
+                )
+            }
+    )
     private val handler = android.os.Handler(android.os.Looper.getMainLooper())
     private val classifier = OnDeviceClassifier()
     private val tracker = ScreenTimeTracker()
@@ -422,34 +433,63 @@ class FocusAccessibilityService : AccessibilityService() {
         signal: ScreenSignal,
         policy: BlockingPolicy
     ) {
-        val result = ocrPipeline.recognize(packageName)
-        val enabled = FocusGuardApplication.database.preferencesDao()
-            .getEnabled() ?: false
-        if (!enabled || packageName != lastPackage) return
-        if (result == OcrResult.Skipped) return
+        android.util.Log.d("FocusGuard", "Path B: Initiating screenshot capture...")
+        var decisionApplied = false
+        try {
+            val result = ocrPipeline.recognize(packageName)
+            val enabled = FocusGuardApplication.database.preferencesDao()
+                .getEnabled() ?: false
+            if (!enabled || packageName != lastPackage) return
+            if (result == OcrResult.Skipped) return
 
-        val ocrText = (result as? OcrResult.Text)?.value.orEmpty()
-        val updatedSignal = if (ocrText.isNotBlank() && ocrText != "Device locked") {
-            signal.withText(ocrText)
-        } else {
-            signal
-        }
-        val raw = withContext(Dispatchers.Default) {
-            classifier.decide(updatedSignal, policy)
-        }
-        val finalDecision = if (raw.needsMoreText) {
-            OnDeviceClassifier.Decision(
-                OnDeviceClassifier.Classification.SLOP,
-                "Long-form video could not be verified as useful."
+            val ocrText = (result as? OcrResult.Text)?.value.orEmpty()
+            val updatedSignal = if (ocrText.isNotBlank() && ocrText != "Device locked") {
+                signal.withText(ocrText)
+            } else {
+                signal
+            }
+            android.util.Log.d(
+                "FocusGuard",
+                "Path B: Classifying with OCR text: ${ocrText.take(200)}"
             )
-        } else {
-            stabilizeYouTubeDecision(packageName, raw)
+            val raw = withContext(Dispatchers.Default) {
+                classifier.decide(updatedSignal, policy)
+            }
+            val finalDecision = if (raw.needsMoreText) {
+                OnDeviceClassifier.Decision(
+                    OnDeviceClassifier.Classification.SLOP,
+                    "Long-form video could not be verified as useful."
+                )
+            } else {
+                stabilizeYouTubeDecision(packageName, raw)
+            }
+            android.util.Log.d(
+                "FocusGuard",
+                "Path B: Final decision ${finalDecision.classification}: ${finalDecision.reason}"
+            )
+            lastContent = updatedSignal.texts
+            cachedDecision = finalDecision
+            lastClassifiedPackage = packageName
+            lastCacheKey = signal.signature + "|" + policy.key()
+            applyIntervention(packageName, finalDecision, updatedSignal.texts)
+            decisionApplied = true
+        } catch (exception: kotlinx.coroutines.CancellationException) {
+            throw exception
+        } catch (exception: Exception) {
+            android.util.Log.e("FocusGuard", "Path B OCR execution failed", exception)
+        } finally {
+            // The OcrPipeline unconditionally clears its in-flight marker and
+            // cooldown timestamp in its own `finally`, so a failed or cancelled
+            // frame can never wedge future scans. On failure we also drop the
+            // decision cache so the next scan re-classifies instead of reusing a
+            // stale decision; on success the cache must be preserved.
+            if (!decisionApplied) resetOcrState()
         }
-        lastContent = updatedSignal.texts
-        cachedDecision = finalDecision
-        lastClassifiedPackage = packageName
-        lastCacheKey = signal.signature + "|" + policy.key()
-        applyIntervention(packageName, finalDecision, updatedSignal.texts)
+    }
+
+    private fun resetOcrState() {
+        lastCacheKey = ""
+        lastClassifiedPackage = ""
     }
 
     private suspend fun recordScreenTime(packageName: String) {

@@ -27,6 +27,7 @@ class OcrTextRecognizer : TextRecognizer {
     private val dispatcher = Dispatchers.Default.limitedParallelism(1)
 
     override suspend fun recognize(bitmap: Bitmap): String = withContext(dispatcher) {
+        android.util.Log.d("FocusGuard", "Path B: Passing bitmap to ML Kit OCR...")
         val working = Bitmap.createBitmap(bitmap)
         val input = InputImage.fromBitmap(working, 0)
         val task = client.process(input)
@@ -41,6 +42,17 @@ class OcrTextRecognizer : TextRecognizer {
             }
         } ?: ""
         if (task.isComplete) working.recycle()
+        if (text.isEmpty()) {
+            android.util.Log.d(
+                "FocusGuard",
+                "Path B: OCR finished with no text (timed out after ${OCR_TIMEOUT_MS}ms or empty frame)"
+            )
+        } else {
+            android.util.Log.d(
+                "FocusGuard",
+                "Path B: OCR finished, raw text: ${text.take(200)}"
+            )
+        }
         text
     }
 
