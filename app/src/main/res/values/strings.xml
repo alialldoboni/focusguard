@@ -6,4 +6,8 @@
         All processing happens locally on your device.
     </string>
     <string name="accessibility_enabled">true</string>
+    <string name="fgs_special_use_subtype">
+        Ongoing accessibility-based screen-content filtering and monitoring required to keep
+        FocusGuard protection active.
+    </string>
 </resources>
