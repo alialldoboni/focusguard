@@ -239,7 +239,34 @@ class OnDeviceClassifierTest {
     fun nsfwKeywordIsBlockedWhenEnabled() {
         val policy = BlockingPolicy(nsfwProtectionEnabled = true)
         val result = decide(
-            signal("com.android.chrome", listOf("watch free xxx videos online"))
+            signal("com.android.chrome", listOf("watch free xxx videos online")),
+            policy
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.SLOP, result.classification)
+    }
+
+    @Test
+    fun nsfwKeywordMatchingIsCaseInsensitive() {
+        val policy = BlockingPolicy(nsfwProtectionEnabled = true)
+        val result = decide(
+            signal("com.android.chrome", listOf("WATCH FREE XXX VIDEOS")),
+            policy
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.SLOP, result.classification)
+    }
+
+    @Test
+    fun nsfwDomainMatchingIsCaseInsensitive() {
+        val policy = BlockingPolicy(nsfwProtectionEnabled = true)
+        val result = decide(
+            signal(
+                "com.android.chrome",
+                listOf("https://WWW.PornHub.COM/video/123"),
+                setOf("url_bar")
+            ),
+            policy
         )
 
         assertEquals(OnDeviceClassifier.Classification.SLOP, result.classification)

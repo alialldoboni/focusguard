@@ -361,6 +361,10 @@ class OnDeviceClassifier {
         return match.groupValues[1].lowercase()
     }
 
-    private fun domainMatches(host: String, blocked: String): Boolean =
-        host == blocked || host.endsWith(".$blocked")
+    private fun domainMatches(host: String, blocked: String): Boolean {
+        val normalizedHost = host.lowercase()
+        val normalizedBlocked = blocked.lowercase()
+        return normalizedHost == normalizedBlocked ||
+            normalizedHost.endsWith(".$normalizedBlocked")
+    }
 }
