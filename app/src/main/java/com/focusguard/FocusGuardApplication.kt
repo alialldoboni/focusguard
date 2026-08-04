@@ -5,6 +5,7 @@ import androidx.room.Room
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.focusguard.db.AppDatabase
+import com.focusguard.settings.UserSettings
 import com.focusguard.worker.ProtectionWatchdogWorker
 
 class FocusGuardApplication : Application() {
@@ -22,6 +23,7 @@ class FocusGuardApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        userSettings = UserSettings(this)
         ProtectionWatchdogWorker.schedule(this)
     }
 
@@ -36,6 +38,8 @@ class FocusGuardApplication : Application() {
         }
 
         lateinit var instance: FocusGuardApplication
+            private set
+        lateinit var userSettings: UserSettings
             private set
         val database: AppDatabase
             get() = instance._appDatabase

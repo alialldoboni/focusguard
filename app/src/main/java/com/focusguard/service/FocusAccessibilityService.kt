@@ -33,7 +33,9 @@ import androidx.core.content.ContextCompat
 import com.focusguard.FocusGuardApplication
 import com.focusguard.MainActivity
 import com.focusguard.R
+import com.focusguard.ai.BlockingPolicy
 import com.focusguard.ai.OnDeviceClassifier
+import com.focusguard.ai.ScreenSignal
 import com.focusguard.db.entity.Preferences
 import com.focusguard.db.entity.RelapseEvent
 import com.focusguard.db.entity.ScreenTimeEvent
@@ -59,10 +61,12 @@ class FocusAccessibilityService : AccessibilityService() {
     private val captureProvider = ScreenCaptureProvider(this)
     private val textRecognizer = OcrTextRecognizer()
     private val ocrPipeline = OcrPipeline(captureProvider, textRecognizer)
+    private val userSettings = FocusGuardApplication.userSettings
 
     private var lastPackage = ""
     private var lastEventText = ""
     private var lastClassifiedPackage = ""
+    private var lastCacheKey = ""
     private var lastContent = emptyList<String>()
     private var cachedDecision = OnDeviceClassifier.Decision(
         OnDeviceClassifier.Classification.ALLOWED,
@@ -109,6 +113,7 @@ class FocusAccessibilityService : AccessibilityService() {
             val blockedPackage = slopPackage
             finishSlopSession()
             lastClassifiedPackage = ""
+            lastCacheKey = ""
             lastContent = emptyList()
             exitBlockedApp(blockedPackage)
         }
@@ -353,48 +358,33 @@ class FocusAccessibilityService : AccessibilityService() {
 
         recordScreenTime(packageName)
 
-        val nodes = root?.let { extractText(it, 0, 3) }.orEmpty()
-        val content = if (nodes.isEmpty() && lastEventText.isNotEmpty()) {
-            listOf(lastEventText)
-        } else {
-            nodes
-        }
-
-        if (packageName == lastClassifiedPackage && content == lastContent) {
-            applyIntervention(packageName, cachedDecision, content)
+        val signal = root?.let { extractSignal(it, packageName) }
+            ?: ScreenSignal(packageName)
+        val policy = userSettings.currentPolicy()
+        val cacheKey = signal.signature + "|" + policy.key()
+        if (packageName == lastClassifiedPackage && cacheKey == lastCacheKey) {
+            applyIntervention(packageName, cachedDecision, lastContent)
             return
         }
 
-        lastClassifiedPackage = packageName
-        lastContent = content
-        if (classifier.isAlwaysBlockedPackage(packageName)) {
-            classifyAndApply(packageName, content)
-        } else if (content.isNotEmpty() && content.joinToString(" ") != "Device locked") {
-            classifyAndApply(packageName, content)
-        } else {
-            runOcrClassification(packageName, content)
-        }
-    }
-
-    private suspend fun classifyAndApply(
-        packageName: String,
-        content: List<String>,
-        fromOcr: Boolean = false
-    ) {
-        val rawDecision = withContext(Dispatchers.Default) {
-            classifier.decide(packageName, content)
+        val decision = withContext(Dispatchers.Default) {
+            classifier.decide(signal, policy)
         }
         android.util.Log.d(
             "FocusGuardDecision",
-            "$packageName -> ${rawDecision.classification}: ${rawDecision.reason}"
+            "$packageName -> ${decision.classification}: ${decision.reason}"
         )
-        if (rawDecision.needsMoreText && !fromOcr) {
-            runOcrClassification(packageName, content)
+
+        val stable = stabilizeYouTubeDecision(packageName, decision)
+        if (stable == decision && decision.needsMoreText) {
+            runOcrClassification(packageName, signal, policy)
             return
         }
-        val decision = stabilizeYouTubeDecision(packageName, rawDecision)
-        cachedDecision = decision
-        applyIntervention(packageName, decision, content)
+        cachedDecision = stable
+        lastClassifiedPackage = packageName
+        lastCacheKey = cacheKey
+        lastContent = signal.texts
+        applyIntervention(packageName, stable, signal.texts)
     }
 
     private fun stabilizeYouTubeDecision(
@@ -409,7 +399,7 @@ class FocusAccessibilityService : AccessibilityService() {
         if (decision.needsMoreText && youtubeSessionWasProductive) {
             return OnDeviceClassifier.Decision(
                 OnDeviceClassifier.Classification.PRODUCTIVE,
-                "The previously verified useful YouTube video remains allowed while " +
+                "The previously verified useful video remains allowed while " +
                     "YouTube temporarily hides its title."
             )
         }
@@ -421,22 +411,37 @@ class FocusAccessibilityService : AccessibilityService() {
 
     private suspend fun runOcrClassification(
         packageName: String,
-        fallbackContent: List<String>
+        signal: ScreenSignal,
+        policy: BlockingPolicy
     ) {
         val result = ocrPipeline.recognize(packageName)
         val enabled = FocusGuardApplication.database.preferencesDao()
             .getEnabled() ?: false
         if (!enabled || packageName != lastPackage) return
-        val content = when (result) {
-            OcrResult.Skipped -> return
-            OcrResult.NoText -> fallbackContent
-            is OcrResult.Text -> result.value
-                .takeIf { it.isNotBlank() && it != "Device locked" }
-                ?.let(::listOf)
-                ?: fallbackContent
+        if (result == OcrResult.Skipped) return
+
+        val ocrText = (result as? OcrResult.Text)?.value.orEmpty()
+        val updatedSignal = if (ocrText.isNotBlank() && ocrText != "Device locked") {
+            signal.withText(ocrText)
+        } else {
+            signal
         }
-        lastContent = content
-        classifyAndApply(packageName, content, fromOcr = true)
+        val raw = withContext(Dispatchers.Default) {
+            classifier.decide(updatedSignal, policy)
+        }
+        val finalDecision = if (raw.needsMoreText) {
+            OnDeviceClassifier.Decision(
+                OnDeviceClassifier.Classification.SLOP,
+                "Long-form video could not be verified as useful."
+            )
+        } else {
+            stabilizeYouTubeDecision(packageName, raw)
+        }
+        lastContent = updatedSignal.texts
+        cachedDecision = finalDecision
+        lastClassifiedPackage = packageName
+        lastCacheKey = signal.signature + "|" + policy.key()
+        applyIntervention(packageName, finalDecision, updatedSignal.texts)
     }
 
     private suspend fun recordScreenTime(packageName: String) {
@@ -589,6 +594,7 @@ class FocusAccessibilityService : AccessibilityService() {
         val blockedPackage = slopPackage
         finishSlopSession()
         lastClassifiedPackage = ""
+        lastCacheKey = ""
         lastContent = emptyList()
         exitBlockedApp(blockedPackage)
     }
@@ -633,6 +639,7 @@ class FocusAccessibilityService : AccessibilityService() {
             lastPackage = ""
             lastEventText = ""
             lastClassifiedPackage = ""
+            lastCacheKey = ""
             lastContent = emptyList()
         }, 1_800L)
     }
@@ -648,6 +655,7 @@ class FocusAccessibilityService : AccessibilityService() {
         lastPackage = ""
         lastEventText = ""
         lastClassifiedPackage = ""
+        lastCacheKey = ""
         lastContent = emptyList()
         cachedDecision = OnDeviceClassifier.Decision(
             OnDeviceClassifier.Classification.ALLOWED,
@@ -659,35 +667,45 @@ class FocusAccessibilityService : AccessibilityService() {
         lastUsageTickElapsed = 0L
     }
 
-    private fun extractText(
-        node: AccessibilityNodeInfo,
-        depth: Int,
-        maxDepth: Int
-    ): List<String> {
-        if (depth > maxDepth) return emptyList()
-        val text = mutableListOf<String>()
+    private fun extractSignal(
+        root: AccessibilityNodeInfo,
+        packageName: String
+    ): ScreenSignal {
+        val texts = mutableListOf<String>()
+        val viewIds = mutableSetOf<String>()
         try {
-            fun addNodeText(value: CharSequence?) {
-                value?.toString()
-                    ?.takeIf { it.length in 1..200 }
-                    ?.let {
-                        text.add(if (node.isSelected) "selected:$it" else it)
+            fun walk(node: AccessibilityNodeInfo, depth: Int) {
+                if (depth > 6) return
+                try {
+                    node.viewIdResourceName
+                        ?.takeIf { it.isNotBlank() }
+                        ?.substringAfterLast('/')
+                        ?.let { viewIds.add(it) }
+                    node.text?.toString()
+                        ?.takeIf { it.length in 1..200 }
+                        ?.let { texts.add(if (node.isSelected) "selected:$it" else it) }
+                    node.contentDescription?.toString()
+                        ?.takeIf { it.length in 1..200 }
+                        ?.let { texts.add(it) }
+                    for (index in 0 until node.childCount) {
+                        node.getChild(index)?.let { walk(it, depth + 1) }
                     }
-            }
-            addNodeText(node.text)
-            addNodeText(node.contentDescription)
-            for (index in 0 until node.childCount) {
-                node.getChild(index)?.let {
-                    text.addAll(extractText(it, depth + 1, maxDepth))
+                } catch (_: Exception) {
                 }
             }
+            walk(root, 0)
         } catch (_: Exception) {
         }
-        return text.distinct().take(30)
+        val contentTexts = if (texts.isEmpty() && lastEventText.isNotEmpty()) {
+            listOf(lastEventText)
+        } else {
+            texts.distinct().take(40)
+        }
+        return ScreenSignal(packageName, contentTexts, viewIds)
     }
 
     private fun shouldIgnorePackage(packageName: String): Boolean =
-        packageName.startsWith("com.android.") ||
+        (packageName.startsWith("com.android.") && packageName != "com.android.chrome") ||
             packageName == "com.sec.android.app.launcher" ||
             packageName == "com.sec.android.app.desktoplauncher" ||
             packageName == "com.google.android.gms" ||

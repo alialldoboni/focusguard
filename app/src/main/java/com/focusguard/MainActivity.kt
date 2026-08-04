@@ -314,6 +314,7 @@ fun Step(num: String, text: String) {
 fun SettingsTab(
     onOpenAccessibility: () -> Unit, onOpenNotifications: () -> Unit
 ) {
+    val settings = FocusGuardApplication.userSettings
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -382,8 +383,211 @@ fun SettingsTab(
         }
         Spacer(Modifier.height(30.dp))
 
+        ProtectionSettingsSection(settings)
+        AppBlockListSection(settings)
         PowerGuardSection()
         Spacer(Modifier.height(30.dp))
+    }
+}
+
+@Composable
+private fun ProtectionSettingsSection(settings: UserSettings) {
+    val state by settings.state.collectAsState()
+
+    Eyebrow("CONTENT FILTERS")
+    Spacer(Modifier.height(14.dp))
+    Card(
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(1.dp, ForestBorder),
+        colors = CardDefaults.cardColors(containerColor = CardBg)
+    ) {
+        Column(modifier = Modifier.padding(22.dp)) {
+            ToggleRow(
+                title = "NSFW & Adult Content Protection",
+                subtitle = "Blocks adult websites and explicit keywords",
+                checked = state.nsfwProtectionEnabled,
+                onCheckedChange = settings::setNsfwProtectionEnabled
+            )
+            HorizontalDivider(color = ForestBorder)
+            ToggleRow(
+                title = "Short-Form Content Blockage",
+                subtitle = "Blocks YouTube Shorts, Instagram Reels and TikTok",
+                checked = state.shortFormBlockingEnabled,
+                onCheckedChange = settings::setShortFormBlockingEnabled
+            )
+            HorizontalDivider(color = ForestBorder)
+            ToggleRow(
+                title = "Long-Form Non-Productive Blocking",
+                subtitle = "Blocks non-useful YouTube videos while they play",
+                checked = state.longFormBlockingEnabled,
+                onCheckedChange = settings::setLongFormBlockingEnabled
+            )
+        }
+    }
+    Spacer(Modifier.height(30.dp))
+}
+
+@Composable
+private fun ToggleRow(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, color = TextPrimary, style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(4.dp))
+            Text(subtitle, color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
+        }
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            colors = SwitchDefaults.colors(
+                checkedTrackColor = Mint,
+                checkedThumbColor = DeepForest,
+                uncheckedTrackColor = ForestBorder,
+                uncheckedThumbColor = TextSecondary
+            )
+        )
+    }
+}
+
+private data class AppEntry(val packageName: String, val label: String)
+
+private fun loadLaunchableApps(context: Context): List<AppEntry> {
+    val packageManager = context.packageManager
+    val launcherIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+    return packageManager.queryIntentActivities(launcherIntent, 0)
+        .map { info ->
+            val label = try {
+                info.activityInfo.loadLabel(packageManager)?.toString()
+                    ?: info.activityInfo.packageName
+            } catch (_: Exception) {
+                info.activityInfo.packageName
+            }
+            AppEntry(info.activityInfo.packageName, label)
+        }
+        .filter { it.packageName != context.packageName }
+        .distinctBy { it.packageName }
+        .sortedBy { it.label.lowercase() }
+}
+
+@Composable
+private fun AppBlockListSection(settings: UserSettings) {
+    val context = LocalContext.current
+    val state by settings.state.collectAsState()
+    val apps = remember { loadLaunchableApps(context) }
+    var query by remember { mutableStateOf("") }
+
+    Eyebrow("APP & GAME BLOCKER")
+    Spacer(Modifier.height(14.dp))
+    Card(
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(1.dp, ForestBorder),
+        colors = CardDefaults.cardColors(containerColor = CardBg)
+    ) {
+        Column(modifier = Modifier.padding(22.dp)) {
+            Text(
+                "Blocked apps & games",
+                style = MaterialTheme.typography.titleLarge,
+                color = TextPrimary
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Select the apps and games FocusGuard should block. Social-media apps " +
+                    "are always blocked and don't appear here.",
+                color = TextSecondary,
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Spacer(Modifier.height(14.dp))
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                singleLine = true,
+                placeholder = { Text("Search apps & games", color = TextSecondary) },
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = Mint,
+                    unfocusedBorderColor = ForestBorder,
+                    focusedTextColor = TextPrimary,
+                    unfocusedTextColor = TextPrimary,
+                    cursorColor = Mint
+                ),
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(Modifier.height(10.dp))
+            val filtered = if (query.isBlank()) {
+                apps
+            } else {
+                apps.filter {
+                    it.label.contains(query, ignoreCase = true) ||
+                        it.packageName.contains(query, ignoreCase = true)
+                }
+            }
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 360.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                if (filtered.isEmpty()) {
+                    Text(
+                        "No apps found.",
+                        color = TextSecondary,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(vertical = 16.dp)
+                    )
+                } else {
+                    filtered.forEach { app ->
+                        AppCheckRow(
+                            app = app,
+                            checked = state.blockedApps.contains(app.packageName),
+                            onCheckedChange = { settings.setBlockedApp(app.packageName, it) }
+                        )
+                        HorizontalDivider(color = ForestBorder)
+                    }
+                }
+            }
+        }
+    }
+    Spacer(Modifier.height(30.dp))
+}
+
+@Composable
+private fun AppCheckRow(
+    app: AppEntry,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(app.label, color = TextPrimary, style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(2.dp))
+            Text(
+                app.packageName,
+                color = TextSecondary,
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+        Checkbox(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            colors = CheckboxDefaults.colors(
+                checkedColor = Mint,
+                uncheckedColor = ForestBorder,
+                checkmarkColor = DeepForest
+            )
+        )
     }
 }
 

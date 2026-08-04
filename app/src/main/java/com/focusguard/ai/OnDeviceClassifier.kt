@@ -1,5 +1,41 @@
 package com.focusguard.ai
 
+/**
+ * What the accessibility service could observe on screen: visible text and the
+ * resource ids (normalized, e.g. `watch_player_overlay`) of the nodes in the
+ * active window. The classifier uses both so it can tell "the Shorts feed",
+ * "an active long-form player" and "YouTube's home screen" apart instead of
+ * blocking just because YouTube is in the foreground.
+ */
+data class ScreenSignal(
+    val packageName: String,
+    val texts: List<String> = emptyList(),
+    val viewIds: Set<String> = emptySet()
+) {
+    val signature: String
+        get() = texts.joinToString("|") + "::" + viewIds.sorted().joinToString(",")
+
+    fun withText(text: String): ScreenSignal =
+        copy(texts = (texts + text).distinct())
+}
+
+/** Live feature toggles + block lists, fed from UserSettings on every decision. */
+data class BlockingPolicy(
+    val nsfwProtectionEnabled: Boolean = false,
+    val shortFormBlockingEnabled: Boolean = true,
+    val longFormBlockingEnabled: Boolean = true,
+    val blockedApps: Set<String> = emptySet(),
+    val blockedDomains: Set<String> = emptySet()
+) {
+    fun key(): String = listOf(
+        nsfwProtectionEnabled.toString(),
+        shortFormBlockingEnabled.toString(),
+        longFormBlockingEnabled.toString(),
+        blockedApps.sorted().joinToString(","),
+        blockedDomains.sorted().joinToString(",")
+    ).joinToString("|")
+}
+
 class OnDeviceClassifier {
 
     enum class Classification { PRODUCTIVE, SLOP, ALLOWED }
@@ -47,6 +83,19 @@ class OnDeviceClassifier {
         "#shorts", "shorts player", "youtube shorts", "swipe up for next video",
         "swipe for next", "use this sound", "reels", "reel player", "tiktok",
         "شورتس", "فيديوهات قصيرة", "ريلز"
+    )
+
+    private val nsfwKeywords = setOf(
+        "porn", "xxx", "pornhub", "xvideos", "xnxx", "xhamster", "redtube", "youporn",
+        "onlyfans", "chaturbate", "stripchat", "nsfw", "erotic", "hentai",
+        "sex video", "adult video", "cam girl", "camgirl", "escort", "babestation",
+        "成人", "エロ", "سكس", "إباحي", "بورن"
+    )
+
+    private val nsfwDomains = setOf(
+        "pornhub.com", "xvideos.com", "xnxx.com", "xhamster.com", "redtube.com",
+        "youporn.com", "onlyfans.com", "chaturbate.com", "stripchat.com",
+        "hentaihaven.org", "brazzers.com", "bangbros.com", "x3mag.com"
     )
 
     private val safePackages = setOf(
@@ -100,21 +149,55 @@ class OnDeviceClassifier {
         "org.mozilla.firefox"
     )
 
+    private val shortsViewIds = setOf(
+        "reel_recycler",
+        "reel_player_page_container",
+        "shorts_player_page_container"
+    )
+
+    private val longFormPlayerViewIds = setOf(
+        "watch_player_overlay",
+        "player_view",
+        "player_controls_view"
+    )
+
+    private val browserUrlViewIds = setOf(
+        "url_bar",
+        "search_box_text",
+        "location_bar",
+        "omnibox"
+    )
+
     fun isAlwaysBlockedPackage(packageName: String): Boolean =
         packageName in socialMediaPackages
 
     fun isYouTubePackage(packageName: String): Boolean =
         packageName in youtubePackages
 
-    fun classify(packageName: String, textNodes: List<String>): Classification {
-        return decide(packageName, textNodes).classification
-    }
+    fun classify(packageName: String, textNodes: List<String>): Classification =
+        decide(packageName, textNodes).classification
 
-    fun decide(packageName: String, textNodes: List<String>): Decision {
+    fun decide(packageName: String, textNodes: List<String>): Decision =
+        decide(ScreenSignal(packageName, textNodes), BlockingPolicy())
+
+    fun decide(signal: ScreenSignal, policy: BlockingPolicy): Decision {
+        val packageName = signal.packageName
         if (isAlwaysBlockedPackage(packageName)) {
             return Decision(
                 Classification.SLOP,
                 "This social-media app is blocked by your FocusGuard policy."
+            )
+        }
+        if (packageName in policy.blockedApps) {
+            return Decision(
+                Classification.SLOP,
+                "This app or game is blocked by your FocusGuard app & game list."
+            )
+        }
+        if (policy.nsfwProtectionEnabled && containsNsfw(signal)) {
+            return Decision(
+                Classification.SLOP,
+                "NSFW or adult content is blocked by your FocusGuard policy."
             )
         }
         if (packageName in productivePackages) {
@@ -123,39 +206,56 @@ class OnDeviceClassifier {
         if (packageName in safePackages) {
             return Decision(Classification.ALLOWED, "This app is allowed.")
         }
-
         if (isYouTubePackage(packageName)) {
-            return decideYouTube(textNodes)
+            return decideYouTube(signal, policy)
         }
-
         if (packageName in mixedBrowserPackages) {
-            val fullText = textNodes.joinToString(" ").lowercase()
-            if (containsShortForm(textNodes, fullText)) {
-                return Decision(
-                    Classification.SLOP,
-                    "Short-form content is blocked by your FocusGuard policy."
-                )
-            }
-            val usefulScore = usefulKeywords.count(fullText::contains)
-            val distractingScore = distractingKeywords.count(fullText::contains)
-            return when {
-                usefulScore > distractingScore && usefulScore > 0 ->
-                    Decision(Classification.PRODUCTIVE, "Useful content signals detected.")
-                distractingScore >= 2 ->
-                    Decision(Classification.SLOP, "Distracting content signals detected.")
-                else -> Decision(Classification.ALLOWED, "No blocked content detected.")
-            }
+            return decideBrowser(signal, policy)
         }
-
         return Decision(Classification.ALLOWED, "This app is allowed.")
     }
 
-    private fun decideYouTube(textNodes: List<String>): Decision {
-        val fullText = textNodes.joinToString(" ").lowercase()
-        if (containsShortForm(textNodes, fullText)) {
+    /**
+     * Evidence-based YouTube handling. FocusGuard never blocks YouTube just for
+     * being open:
+     *  - Shorts: blocked only when Shorts UI is actually detected.
+     *  - Long-form: blocked only while the player overlay is active, unless the
+     *    visible title/channel matches useful-content keywords.
+     *  - Home / browse (no player): always allowed.
+     */
+    private fun decideYouTube(signal: ScreenSignal, policy: BlockingPolicy): Decision {
+        val fullText = signal.texts.joinToString(" ").lowercase()
+        val isShorts = signal.viewIds.any { it in shortsViewIds } ||
+            containsShortForm(signal.texts, fullText)
+        if (isShorts) {
+            return if (policy.shortFormBlockingEnabled) {
+                Decision(
+                    Classification.SLOP,
+                    "YouTube Shorts and short-form content are blocked by your " +
+                        "FocusGuard policy."
+                )
+            } else {
+                Decision(Classification.ALLOWED, "Short-form blocking is disabled.")
+            }
+        }
+
+        val overlayActive = signal.viewIds.any { it in longFormPlayerViewIds }
+        if (!overlayActive) {
+            return Decision(
+                Classification.ALLOWED,
+                "No active YouTube video player detected."
+            )
+        }
+
+        if (!policy.longFormBlockingEnabled) {
+            return Decision(Classification.ALLOWED, "Long-form blocking is disabled.")
+        }
+
+        if (fullText.isBlank()) {
             return Decision(
                 Classification.SLOP,
-                "YouTube Shorts and other short-form videos are always blocked."
+                "A YouTube video is playing but its title could not be read.",
+                needsMoreText = true
             )
         }
 
@@ -166,21 +266,81 @@ class OnDeviceClassifier {
             usefulScore >= 2 && usefulScore > distractingScore ->
                 Decision(
                     Classification.PRODUCTIVE,
-                    "The YouTube title or description contains useful content signals."
+                    "The video title or channel contains useful content signals."
                 )
             distractingScore > 0 ->
                 Decision(
                     Classification.SLOP,
-                    "The YouTube title or description contains entertainment signals."
+                    "The video title or channel contains entertainment signals."
                 )
             else ->
                 Decision(
                     Classification.SLOP,
-                    "FocusGuard could not verify a useful video title from the text " +
-                        "YouTube exposed, so strict mode blocked it.",
-                    needsMoreText = true
+                    "Long-form video could not be verified as useful."
                 )
         }
+    }
+
+    /**
+     * Browser handling: reads the URL bar node (`url_bar`, `search_box_text`) for
+     * domain-level blocking, plus NSFW keywords and short-form indicators.
+     */
+    private fun decideBrowser(signal: ScreenSignal, policy: BlockingPolicy): Decision {
+        val fullText = signal.texts.joinToString(" ").lowercase()
+        val domain = extractDomain(fullText)
+        val urlBarPresent = signal.viewIds.any { it in browserUrlViewIds }
+
+        if (domain != null) {
+            if (policy.nsfwProtectionEnabled &&
+                nsfwDomains.any { domainMatches(domain, it) }
+            ) {
+                return Decision(
+                    Classification.SLOP,
+                    "This website is blocked by your NSFW protection policy."
+                )
+            }
+            if (policy.blockedDomains.any { domainMatches(domain, it) }) {
+                return Decision(
+                    Classification.SLOP,
+                    "This website is blocked by your FocusGuard policy."
+                )
+            }
+        }
+
+        if (policy.nsfwProtectionEnabled && nsfwKeywords.any { fullText.contains(it) }) {
+            return Decision(
+                Classification.SLOP,
+                "NSFW or adult content is blocked by your FocusGuard policy."
+            )
+        }
+
+        if (policy.shortFormBlockingEnabled &&
+            (fullText.contains("tiktok.com") || fullText.contains("youtube.com/shorts") ||
+                containsShortForm(signal.texts, fullText))
+        ) {
+            return Decision(
+                Classification.SLOP,
+                "Short-form content is blocked by your FocusGuard policy."
+            )
+        }
+
+        val usefulScore = usefulKeywords.count(fullText::contains)
+        val distractingScore = distractingKeywords.count(fullText::contains)
+        return when {
+            distractingScore >= 2 ->
+                Decision(Classification.SLOP, "Distracting content signals detected.")
+            usefulScore > distractingScore && usefulScore > 0 ->
+                Decision(Classification.PRODUCTIVE, "Useful content signals detected.")
+            else ->
+                Decision(Classification.ALLOWED, "No blocked content detected.")
+        }
+    }
+
+    private fun containsNsfw(signal: ScreenSignal): Boolean {
+        val fullText = signal.texts.joinToString(" ").lowercase()
+        if (nsfwKeywords.any { fullText.contains(it) }) return true
+        val domain = extractDomain(fullText)
+        return domain != null && nsfwDomains.any { domainMatches(domain, it) }
     }
 
     private fun containsShortForm(
@@ -193,4 +353,14 @@ class OnDeviceClassifier {
         }
         return selectedShorts || shortFormIndicators.any(fullText::contains)
     }
+
+    private fun extractDomain(text: String): String? {
+        val match = Regex("""(?:https?://)?(?:www\.)?([a-z0-9-]+(?:\.[a-z0-9-]+)+)""")
+            .find(text)
+            ?: return null
+        return match.groupValues[1].lowercase()
+    }
+
+    private fun domainMatches(host: String, blocked: String): Boolean =
+        host == blocked || host.endsWith(".$blocked")
 }
