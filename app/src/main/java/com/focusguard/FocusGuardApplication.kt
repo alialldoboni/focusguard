@@ -5,6 +5,7 @@ import androidx.room.Room
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.focusguard.db.AppDatabase
+import com.focusguard.worker.ProtectionWatchdogWorker
 
 class FocusGuardApplication : Application() {
 
@@ -21,6 +22,7 @@ class FocusGuardApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        ProtectionWatchdogWorker.schedule(this)
     }
 
     companion object {
