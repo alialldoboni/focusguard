@@ -6,16 +6,28 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.graphics.Bitmap
+import android.content.pm.ServiceInfo
+import android.content.res.ColorStateList
+import android.graphics.Color
+import android.graphics.PixelFormat
+import android.graphics.Typeface
 import android.os.Build
+import android.os.PowerManager
 import android.os.SystemClock
 import android.provider.Settings
-import android.view.Display
+import android.view.Gravity
+import android.view.View
+import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.widget.Button
+import android.widget.FrameLayout
+import android.widget.LinearLayout
+import android.widget.TextView
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.focusguard.FocusGuardApplication
@@ -26,12 +38,10 @@ import com.focusguard.db.entity.Preferences
 import com.focusguard.db.entity.RelapseEvent
 import com.focusguard.db.entity.ScreenTimeEvent
 import com.focusguard.db.entity.ScrollSession
+import com.focusguard.ocr.OcrPipeline
+import com.focusguard.ocr.OcrTextRecognizer
+import com.focusguard.ocr.ScreenCaptureProvider
 import com.focusguard.tracker.ScreenTimeTracker
-import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.text.TextRecognition
-import com.google.mlkit.vision.text.latin.TextRecognizerOptions
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -45,10 +55,10 @@ class FocusAccessibilityService : AccessibilityService() {
     private val handler = android.os.Handler(android.os.Looper.getMainLooper())
     private val classifier = OnDeviceClassifier()
     private val tracker = ScreenTimeTracker()
-    private val ocr = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-    private val screenshotExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+    private val captureProvider = ScreenCaptureProvider(this)
+    private val textRecognizer = OcrTextRecognizer()
+    private val ocrPipeline = OcrPipeline(captureProvider, textRecognizer)
 
-    private var scanRunnable: Runnable? = null
     private var lastPackage = ""
     private var lastEventText = ""
     private var lastClassifiedPackage = ""
@@ -57,7 +67,6 @@ class FocusAccessibilityService : AccessibilityService() {
         OnDeviceClassifier.Classification.ALLOWED,
         "No blocked content detected."
     )
-    private var ocrPendingPackage = ""
     private var overlayInFlight = false
     private var exitInProgress = false
     private var youtubeSessionWasProductive = false
@@ -69,6 +78,12 @@ class FocusAccessibilityService : AccessibilityService() {
     private var activeSessionSummary = ""
     private var lastUsagePackage = ""
     private var lastUsageTickElapsed = 0L
+
+    private var scanning = false
+    private var scanScheduled = false
+    private var receiversRegistered = false
+    private var overlayWindowView: View? = null
+    private var fallbackExitRunnable: Runnable? = null
 
     private val stopReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -98,17 +113,79 @@ class FocusAccessibilityService : AccessibilityService() {
         }
     }
 
+    private val screenOnReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == Intent.ACTION_SCREEN_ON) requestImmediateScan()
+        }
+    }
+
+    private val scanRunnable = object : Runnable {
+        override fun run() {
+            scanScheduled = false
+            if (!scanning) return
+            scope.launch { scanOnce() }
+            scheduleNextScan(
+                if (isInteractive()) SCAN_INTERVAL_MS else SCREEN_OFF_SCAN_INTERVAL_MS
+            )
+        }
+    }
+
     companion object {
         const val ACTION_STOP = "com.focusguard.STOP"
         const val ACTION_TOGGLE = "com.focusguard.TOGGLE"
+        const val ACTION_RESTART = "com.focusguard.RESTART"
         const val ACTION_OVERLAY_FINISHED = "com.focusguard.OVERLAY_FINISHED"
         private const val SCAN_INTERVAL_MS = 5_000L
+        private const val SCREEN_OFF_SCAN_INTERVAL_MS = 30_000L
+        private const val OVERLAY_FALLBACK_DURATION_MS = 6_000L
 
-        fun isEnabled(context: Context): Boolean =
-            Settings.Secure.getString(
-                context.contentResolver,
-                Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
-            )?.contains(context.packageName) == true
+        fun isEnabled(context: Context): Boolean {
+            val component = ComponentName(context, FocusAccessibilityService::class.java)
+            return accessibilityServicesContain(
+                Settings.Secure.getString(
+                    context.contentResolver,
+                    Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+                ),
+                component.flattenToString(),
+                component.flattenToShortString(),
+                context.packageName
+            )
+        }
+
+        /**
+         * Pure string check against `Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES`
+         * (a colon-separated list of flattened ComponentNames). Extracted from
+         * [isEnabled] so the parsing rules can be unit-tested.
+         */
+        internal fun accessibilityServicesContain(
+            services: String?,
+            flattened: String,
+            shortFlattened: String,
+            packageName: String
+        ): Boolean {
+            if (services.isNullOrBlank()) return false
+            return services.split(':').any {
+                it.equals(flattened, ignoreCase = true) ||
+                    it.equals(shortFlattened, ignoreCase = true) ||
+                    it.equals(packageName, ignoreCase = true)
+            }
+        }
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        createNotificationChannels()
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Restart path from ServiceLifecycleReceiver / watchdog / notification.
+        // Must call startForeground within 5s of startForegroundService().
+        if (intent?.action == ACTION_RESTART || intent == null) {
+            startForegroundCompat()
+            registerReceivers()
+            startScanning()
+        }
+        return START_STICKY
     }
 
     override fun onServiceConnected() {
@@ -125,10 +202,7 @@ class FocusAccessibilityService : AccessibilityService() {
         }
 
         createNotificationChannels()
-        startForeground(
-            1001,
-            buildForegroundNotification()
-        )
+        startForegroundCompat()
         scope.launch {
             val dao = FocusGuardApplication.database.preferencesDao()
             if (dao.getPreferences() == null) {
@@ -148,12 +222,15 @@ class FocusAccessibilityService : AccessibilityService() {
         ) {
             updateCurrentPackage(packageName)
         }
-        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
-            event.text
-                ?.mapNotNull { it?.toString() }
-                ?.takeIf { it.isNotEmpty() }
-                ?.joinToString(" ")
-                ?.let { lastEventText = it }
+        when (event.eventType) {
+            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
+                event.text
+                    ?.mapNotNull { it?.toString() }
+                    ?.takeIf { it.isNotEmpty() }
+                    ?.joinToString(" ")
+                    ?.let { lastEventText = it }
+            }
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> requestImmediateScan()
         }
     }
 
@@ -164,16 +241,36 @@ class FocusAccessibilityService : AccessibilityService() {
     override fun onUnbind(intent: Intent?): Boolean {
         stopScanning()
         finishSlopSession()
+        dismissBlockOverlayFallback()
+        fallbackExitRunnable?.let(handler::removeCallbacks)
+        fallbackExitRunnable = null
         serviceJob.cancel()
-        screenshotExecutor.shutdownNow()
-        ocr.close()
-        try {
-            unregisterReceiver(stopReceiver)
-            unregisterReceiver(toggleReceiver)
-            unregisterReceiver(overlayFinishedReceiver)
-        } catch (_: Exception) {
+        captureProvider.shutdown()
+        textRecognizer.close()
+        if (receiversRegistered) {
+            receiversRegistered = false
+            try {
+                unregisterReceiver(stopReceiver)
+                unregisterReceiver(toggleReceiver)
+                unregisterReceiver(overlayFinishedReceiver)
+                unregisterReceiver(screenOnReceiver)
+            } catch (_: Exception) {
+            }
         }
         return super.onUnbind(intent)
+    }
+
+    private fun startForegroundCompat() {
+        val notification = buildForegroundNotification()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(
+                1001,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+            )
+        } else {
+            startForeground(1001, notification)
+        }
     }
 
     private fun createNotificationChannels() {
@@ -201,18 +298,33 @@ class FocusAccessibilityService : AccessibilityService() {
     }
 
     private fun startScanning() {
-        scanRunnable = object : Runnable {
-            override fun run() {
-                scope.launch { scanOnce() }
-                handler.postDelayed(this, SCAN_INTERVAL_MS)
-            }
-        }
-        handler.post(scanRunnable!!)
+        scanning = true
+        scanScheduled = false
+        scheduleNextScan(0)
     }
 
     private fun stopScanning() {
-        scanRunnable?.let(handler::removeCallbacks)
-        scanRunnable = null
+        scanning = false
+        handler.removeCallbacks(scanRunnable)
+    }
+
+    private fun scheduleNextScan(delayMs: Long) {
+        if (!scanning) return
+        handler.removeCallbacks(scanRunnable)
+        handler.postDelayed(scanRunnable, delayMs)
+    }
+
+    private fun requestImmediateScan() {
+        if (!scanning || scanScheduled) return
+        scanScheduled = true
+        handler.removeCallbacks(scanRunnable)
+        handler.post(scanRunnable)
+    }
+
+    private fun isInteractive(): Boolean {
+        val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager
+            ?: return true
+        return powerManager.isInteractive
     }
 
     private suspend fun scanOnce() {
@@ -223,6 +335,7 @@ class FocusAccessibilityService : AccessibilityService() {
             return
         }
         if (exitInProgress) return
+        if (!isInteractive()) return
 
         val root = rootInActiveWindow
         val rootPackage = root?.packageName?.toString().orEmpty()
@@ -258,7 +371,7 @@ class FocusAccessibilityService : AccessibilityService() {
         } else if (content.isNotEmpty() && content.joinToString(" ") != "Device locked") {
             classifyAndApply(packageName, content)
         } else {
-            requestOcrClassification(packageName, content)
+            runOcrClassification(packageName, content)
         }
     }
 
@@ -275,7 +388,7 @@ class FocusAccessibilityService : AccessibilityService() {
             "$packageName -> ${rawDecision.classification}: ${rawDecision.reason}"
         )
         if (rawDecision.needsMoreText && !fromOcr) {
-            requestOcrClassification(packageName, content)
+            runOcrClassification(packageName, content)
             return
         }
         val decision = stabilizeYouTubeDecision(packageName, rawDecision)
@@ -305,92 +418,20 @@ class FocusAccessibilityService : AccessibilityService() {
         return decision
     }
 
-    private fun requestOcrClassification(
+    private suspend fun runOcrClassification(
         packageName: String,
         fallbackContent: List<String>
     ) {
-        if (ocrPendingPackage == packageName) return
-        ocrPendingPackage = packageName
-        try {
-            takeScreenshot(
-                Display.DEFAULT_DISPLAY,
-                screenshotExecutor,
-                object : TakeScreenshotCallback {
-                    override fun onSuccess(result: ScreenshotResult) {
-                        var bufferClosed = false
-                        try {
-                            val hardwareBitmap = Bitmap.wrapHardwareBuffer(
-                                result.hardwareBuffer,
-                                result.colorSpace
-                            )
-                            val bitmap = hardwareBitmap?.copy(
-                                Bitmap.Config.ARGB_8888,
-                                false
-                            )
-                            hardwareBitmap?.recycle()
-                            result.hardwareBuffer.close()
-                            bufferClosed = true
-                            if (bitmap != null) {
-                                ocr.process(InputImage.fromBitmap(bitmap, 0))
-                                    .addOnSuccessListener { recognized ->
-                                        bitmap.recycle()
-                                        completeOcrClassification(
-                                            packageName,
-                                            fallbackContent,
-                                            recognized.text
-                                        )
-                                    }
-                                    .addOnFailureListener {
-                                        bitmap.recycle()
-                                        completeOcrClassification(
-                                            packageName,
-                                            fallbackContent,
-                                            ""
-                                        )
-                                    }
-                            } else {
-                                completeOcrClassification(
-                                    packageName,
-                                    fallbackContent,
-                                    ""
-                                )
-                            }
-                        } catch (exception: Exception) {
-                            if (!bufferClosed) result.hardwareBuffer.close()
-                            android.util.Log.w("FocusGuard", "OCR setup failed", exception)
-                            completeOcrClassification(packageName, fallbackContent, "")
-                        }
-                    }
-
-                    override fun onFailure(errorCode: Int) {
-                        android.util.Log.w("FocusGuard", "Screenshot failed: $errorCode")
-                        completeOcrClassification(packageName, fallbackContent, "")
-                    }
-                }
-            )
-        } catch (exception: Exception) {
-            android.util.Log.w("FocusGuard", "Screenshot failed", exception)
-            completeOcrClassification(packageName, fallbackContent, "")
-        }
-    }
-
-    private fun completeOcrClassification(
-        packageName: String,
-        fallbackContent: List<String>,
-        recognizedText: String
-    ) {
-        scope.launch {
-            ocrPendingPackage = ""
-            val enabled = FocusGuardApplication.database.preferencesDao()
-                .getEnabled() ?: false
-            if (!enabled || packageName != lastPackage) return@launch
-            val content = recognizedText
-                .takeIf { it.isNotBlank() && it != "Device locked" }
-                ?.let(::listOf)
-                ?: fallbackContent
-            lastContent = content
-            classifyAndApply(packageName, content, fromOcr = true)
-        }
+        val recognizedText = ocrPipeline.recognize(packageName)
+        val enabled = FocusGuardApplication.database.preferencesDao()
+            .getEnabled() ?: false
+        if (!enabled || packageName != lastPackage) return
+        val content = recognizedText
+            .takeIf { it.isNotBlank() && it != "Device locked" }
+            ?.let(::listOf)
+            ?: fallbackContent
+        lastContent = content
+        classifyAndApply(packageName, content, fromOcr = true)
     }
 
     private suspend fun recordScreenTime(packageName: String) {
@@ -451,6 +492,70 @@ class FocusAccessibilityService : AccessibilityService() {
                 }
             )
         } catch (exception: Exception) {
+            // MIUI/HyperOS and ColorOS can suppress background activity starts.
+            // Fall back to a system accessibility overlay window.
+            android.util.Log.e("FocusGuard", "Could not show block overlay", exception)
+            showBlockOverlayFallback(activeSessionLabel, decision.reason)
+        }
+    }
+
+    private fun showBlockOverlayFallback(label: String, reason: String) {
+        try {
+            val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+            dismissBlockOverlayFallback()
+
+            val root = FrameLayout(this).apply {
+                setBackgroundColor(Color.argb(250, 7, 29, 25))
+            }
+            val content = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                setPadding(64, 64, 64, 64)
+            }
+            content.addView(TextView(this).apply {
+                text = "Content blocked"
+                textSize = 32f
+                gravity = Gravity.CENTER
+                typeface = Typeface.create(Typeface.SERIF, Typeface.BOLD)
+                setTextColor(Color.rgb(240, 243, 238))
+            })
+            content.addView(TextView(this).apply {
+                text = label
+                textSize = 20f
+                gravity = Gravity.CENTER
+                setTextColor(Color.rgb(99, 205, 189))
+                setPadding(0, 24, 0, 24)
+            })
+            content.addView(TextView(this).apply {
+                text = reason
+                textSize = 17f
+                gravity = Gravity.CENTER
+                setTextColor(Color.rgb(240, 243, 238))
+                setPadding(0, 0, 0, 28)
+            })
+            content.addView(Button(this).apply {
+                text = "Go Home now"
+                backgroundTintList = ColorStateList.valueOf(Color.rgb(99, 205, 189))
+                setTextColor(Color.rgb(7, 29, 25))
+                isAllCaps = false
+                setOnClickListener { completeFallbackExit() }
+            })
+            root.addView(content)
+
+            val params = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                PixelFormat.TRANSLUCENT
+            )
+            windowManager.addView(root, params)
+            overlayWindowView = root
+
+            fallbackExitRunnable?.let(handler::removeCallbacks)
+            fallbackExitRunnable = Runnable { completeFallbackExit() }
+            handler.postDelayed(fallbackExitRunnable!!, OVERLAY_FALLBACK_DURATION_MS)
+        } catch (exception: Exception) {
             android.util.Log.e("FocusGuard", "Could not show block overlay", exception)
             overlayInFlight = false
             if (!performGlobalAction(GLOBAL_ACTION_HOME)) {
@@ -458,6 +563,29 @@ class FocusAccessibilityService : AccessibilityService() {
             }
             finishSlopSession()
         }
+    }
+
+    private fun dismissBlockOverlayFallback() {
+        overlayWindowView?.let { view ->
+            try {
+                (getSystemService(Context.WINDOW_SERVICE) as WindowManager).removeView(view)
+            } catch (_: Exception) {
+            }
+            overlayWindowView = null
+        }
+    }
+
+    private fun completeFallbackExit() {
+        if (!overlayInFlight) return
+        overlayInFlight = false
+        fallbackExitRunnable?.let(handler::removeCallbacks)
+        fallbackExitRunnable = null
+        dismissBlockOverlayFallback()
+        val blockedPackage = slopPackage
+        finishSlopSession()
+        lastClassifiedPackage = ""
+        lastContent = emptyList()
+        exitBlockedApp(blockedPackage)
     }
 
     private fun finishSlopSession() {
@@ -509,6 +637,9 @@ class FocusAccessibilityService : AccessibilityService() {
 
     private fun resetMonitoringState() {
         finishSlopSession()
+        dismissBlockOverlayFallback()
+        fallbackExitRunnable?.let(handler::removeCallbacks)
+        fallbackExitRunnable = null
         lastPackage = ""
         lastEventText = ""
         lastClassifiedPackage = ""
@@ -517,7 +648,6 @@ class FocusAccessibilityService : AccessibilityService() {
             OnDeviceClassifier.Classification.ALLOWED,
             "No blocked content detected."
         )
-        ocrPendingPackage = ""
         overlayInFlight = false
         youtubeSessionWasProductive = false
         lastUsagePackage = ""
@@ -557,8 +687,14 @@ class FocusAccessibilityService : AccessibilityService() {
             packageName == "com.sec.android.app.desktoplauncher" ||
             packageName == "com.google.android.gms" ||
             packageName == "com.coloros" ||
-            packageName == "com.oppo" ||
-            packageName == "com.oneplus"
+            packageName == "com.oplus.launcher" ||
+            packageName == "com.oppo.launcher" ||
+            packageName == "com.coloros.launcher" ||
+            packageName == "com.oneplus.launcher" ||
+            packageName == "com.miui.home" ||
+            packageName == "com.huawei.android.launcher" ||
+            packageName == "com.vivo.launcher" ||
+            packageName == "com.flyme.launcher"
 
     private fun updateCurrentPackage(packageName: String) {
         if (packageName != lastPackage) {
@@ -612,6 +748,8 @@ class FocusAccessibilityService : AccessibilityService() {
     }
 
     private fun registerReceivers() {
+        if (receiversRegistered) return
+        receiversRegistered = true
         ContextCompat.registerReceiver(
             this,
             stopReceiver,
@@ -628,6 +766,12 @@ class FocusAccessibilityService : AccessibilityService() {
             this,
             overlayFinishedReceiver,
             IntentFilter(ACTION_OVERLAY_FINISHED),
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+        ContextCompat.registerReceiver(
+            this,
+            screenOnReceiver,
+            IntentFilter(Intent.ACTION_SCREEN_ON),
             ContextCompat.RECEIVER_NOT_EXPORTED
         )
     }

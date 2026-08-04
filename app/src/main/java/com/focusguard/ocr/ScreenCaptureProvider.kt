@@ -22,11 +22,13 @@ import kotlinx.coroutines.withContext
  * accuracy at ~1280 px on the long edge is essentially identical and the frame
  * is several times faster.
  */
-class ScreenCaptureProvider(private val service: AccessibilityService) {
+class ScreenCaptureProvider(private val service: AccessibilityService) : CaptureSource {
 
     private val executor: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "focusguard-capture").apply { priority = Thread.MAX_PRIORITY }
     }
+
+    override suspend fun capture(): Bitmap? = captureDownscaled()
 
     suspend fun captureDownscaled(maxDim: Int = DEFAULT_MAX_DIM): Bitmap? =
         withContext(Dispatchers.Default) {
@@ -75,18 +77,17 @@ class ScreenCaptureProvider(private val service: AccessibilityService) {
     companion object {
         const val DEFAULT_MAX_DIM = 1280
 
-        fun downscale(bitmap: Bitmap, maxDim: Int): Bitmap {
-            val width = bitmap.width
-            val height = bitmap.height
+        internal fun downscaleSize(width: Int, height: Int, maxDim: Int): Pair<Int, Int> {
             val longest = maxOf(width, height)
-            if (longest <= maxDim) return bitmap
+            if (longest <= maxDim) return width to height
             val scale = maxDim.toFloat() / longest
-            return Bitmap.createScaledBitmap(
-                bitmap,
-                (width * scale).toInt(),
-                (height * scale).toInt(),
-                true
-            )
+            return (width * scale).toInt() to (height * scale).toInt()
+        }
+
+        fun downscale(bitmap: Bitmap, maxDim: Int): Bitmap {
+            val (width, height) = downscaleSize(bitmap.width, bitmap.height, maxDim)
+            if (width == bitmap.width && height == bitmap.height) return bitmap
+            return Bitmap.createScaledBitmap(bitmap, width, height, true)
         }
     }
 }

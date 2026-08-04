@@ -1,6 +1,7 @@
 package com.focusguard
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
@@ -28,11 +29,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import com.focusguard.service.FocusAccessibilityService
+import com.focusguard.service.OemBatterySettings
 import com.focusguard.ui.theme.*
 import kotlinx.coroutines.launch
 
@@ -374,6 +381,124 @@ fun SettingsTab(
             }
         }
         Spacer(Modifier.height(30.dp))
+
+        PowerGuardSection()
+        Spacer(Modifier.height(30.dp))
+    }
+}
+
+@Composable
+private fun PowerGuardSection() {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var batteryIgnored by remember { mutableStateOf(false) }
+    val autoStartIntents = remember { OemBatterySettings.oemAutoStartIntents() }
+    val backgroundIntents = remember { OemBatterySettings.oemBackgroundActivityIntents() }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                batteryIgnored = OemBatterySettings.isIgnoringBatteryOptimizations(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    Eyebrow("POWERGUARD SETUP")
+    Spacer(Modifier.height(14.dp))
+    Card(
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(1.dp, ForestBorder),
+        colors = CardDefaults.cardColors(containerColor = CardBg)
+    ) {
+        Column(modifier = Modifier.padding(22.dp)) {
+            Text(
+                "Keep FocusGuard alive in the background",
+                style = MaterialTheme.typography.titleLarge,
+                color = TextPrimary
+            )
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "Samsung, Xiaomi, Oppo and Huawei can stop background services to save battery. " +
+                    "Adjust these settings so protection keeps running.",
+                color = TextSecondary,
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Spacer(Modifier.height(18.dp))
+
+            PowerRow(
+                title = "Battery optimization",
+                subtitle = if (batteryIgnored) "FocusGuard is exempt" else "Restricted — tap to exempt",
+                statusColor = if (batteryIgnored) Mint else WarmSand,
+                onClick = { OemBatterySettings.requestIgnoreBatteryOptimizations(context) }
+            )
+            if (autoStartIntents.isNotEmpty()) {
+                HorizontalDivider(color = ForestBorder)
+                PowerRow(
+                    title = "Autostart",
+                    subtitle = "Allow FocusGuard to launch with your device",
+                    onClick = {
+                        OemBatterySettings.launchSettings(
+                            context,
+                            OemBatterySettings.OemCategory.AUTOSTART
+                        )
+                    }
+                )
+            }
+            if (backgroundIntents.isNotEmpty()) {
+                HorizontalDivider(color = ForestBorder)
+                PowerRow(
+                    title = "Background activity",
+                    subtitle = "Prevent battery saver from stopping FocusGuard",
+                    onClick = {
+                        OemBatterySettings.launchSettings(
+                            context,
+                            OemBatterySettings.OemCategory.BACKGROUND
+                        )
+                    }
+                )
+            }
+            HorizontalDivider(color = ForestBorder)
+            PowerRow(
+                title = "Restart protection",
+                subtitle = "Restart the background monitoring service now",
+                onClick = { restartProtection(context) }
+            )
+        }
+    }
+}
+
+@Composable
+private fun PowerRow(
+    title: String,
+    subtitle: String,
+    statusColor: Color = TextSecondary,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 16.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, color = TextPrimary, style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(4.dp))
+            Text(subtitle, color = statusColor, style = MaterialTheme.typography.bodyMedium)
+        }
+        Icon(Icons.AutoMirrored.Filled.ArrowForward, null, tint = TextSecondary)
+    }
+}
+
+private fun restartProtection(context: Context) {
+    try {
+        context.startForegroundService(
+            Intent(context, FocusAccessibilityService::class.java)
+                .setAction(FocusAccessibilityService.ACTION_RESTART)
+        )
+    } catch (_: Exception) {
     }
 }
 

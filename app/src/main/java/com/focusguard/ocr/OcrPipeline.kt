@@ -1,10 +1,18 @@
 package com.focusguard.ocr
 
-import android.os.SystemClock
+import android.graphics.Bitmap
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+
+fun interface CaptureSource {
+    suspend fun capture(): Bitmap?
+}
+
+fun interface TextRecognizer {
+    suspend fun recognize(bitmap: Bitmap): String
+}
 
 /**
  * Coordinates screen capture + OCR as a single non-blocking, serialized flow.
@@ -17,41 +25,37 @@ import kotlinx.coroutines.sync.withLock
  *   thread is never blocked because capture and ML Kit run off-thread.
  */
 class OcrPipeline(
-    private val captureProvider: ScreenCaptureProvider,
-    private val recognizer: OcrTextRecognizer
+    private val captureSource: CaptureSource,
+    private val textRecognizer: TextRecognizer
 ) {
 
     private val mutex = Mutex()
     private val inFlight = AtomicReference<String?>(null)
-    private val lastAttemptElapsed = AtomicLong(0L)
+    private val lastAttemptNanos = AtomicLong(0L)
 
     suspend fun recognize(packageName: String): String {
         if (inFlight.get() != null) return ""
-        val now = SystemClock.elapsedRealtime()
-        if (now - lastAttemptElapsed.get() < COOLDOWN_MS) return ""
+        val now = System.nanoTime()
+        if (now - lastAttemptNanos.get() < COOLDOWN_NANOS) return ""
 
         return mutex.withLock {
             if (!inFlight.compareAndSet(null, packageName)) return@withLock ""
             try {
-                val bitmap = captureProvider.captureDownscaled() ?: return@withLock ""
+                val bitmap = captureSource.capture() ?: return@withLock ""
                 try {
-                    recognizer.recognize(bitmap)
+                    textRecognizer.recognize(bitmap)
                 } finally {
                     bitmap.recycle()
                 }
             } finally {
-                lastAttemptElapsed.set(SystemClock.elapsedRealtime())
+                lastAttemptNanos.set(System.nanoTime())
                 inFlight.set(null)
             }
         }
     }
 
-    fun shutdown() {
-        captureProvider.shutdown()
-        recognizer.close()
-    }
-
     companion object {
         const val COOLDOWN_MS = 5_000L
+        const val COOLDOWN_NANOS = COOLDOWN_MS * 1_000_000L
     }
 }

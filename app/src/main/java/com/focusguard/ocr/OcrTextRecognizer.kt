@@ -21,12 +21,12 @@ import kotlinx.coroutines.withTimeoutOrNull
  *   native OCR engine by freeing pixels it is still reading.
  * - A hard timeout prevents a hung task from permanently blocking the pipeline.
  */
-class OcrTextRecognizer {
+class OcrTextRecognizer : TextRecognizer {
 
     private val client = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
     private val dispatcher = Dispatchers.Default.limitedParallelism(1)
 
-    suspend fun recognize(bitmap: Bitmap): String = withContext(dispatcher) {
+    override suspend fun recognize(bitmap: Bitmap): String = withContext(dispatcher) {
         val working = Bitmap.createBitmap(bitmap)
         val input = InputImage.fromBitmap(working, 0)
         val task = client.process(input)
