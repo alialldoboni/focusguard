@@ -375,6 +375,66 @@ class OnDeviceClassifierTest {
         assertEquals(OnDeviceClassifier.Classification.SLOP, result.classification)
     }
 
+    // --- Background mini-player / lingering chrome must never block the home feed ---
+
+    @Test
+    fun homeFeedWithBackgroundMiniPlayerIsAllowed() {
+        val result = decide(
+            signal(
+                "com.google.android.youtube",
+                listOf(
+                    "Home", "Shorts", "Subscriptions",
+                    "5 Amazing Gadgets 2.1M views 3 days ago",
+                    "Cooking Basics 5M views 1 day ago"
+                ),
+                setOf("slim_status_bar_player_container", "bottom_tab", "thumbnail")
+            )
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.ALLOWED, result.classification)
+    }
+
+    @Test
+    fun backgroundMiniPlayerOnHomeDoesNotTriggerOcr() {
+        val result = decide(
+            signal(
+                "com.google.android.youtube",
+                emptyList(),
+                setOf("slim_status_bar_player_container", "bottom_tab")
+            )
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.ALLOWED, result.classification)
+        assertEquals(false, result.needsMoreText)
+    }
+
+    @Test
+    fun reelTimeBarOnHomeDoesNotBlock() {
+        val result = decide(
+            signal(
+                "com.google.android.youtube",
+                listOf("Home", "Shorts", "A random video 1M views"),
+                setOf("reel_time_bar")
+            )
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.ALLOWED, result.classification)
+    }
+
+    @Test
+    fun backgroundMiniPlayerWithoutBrowseChromeStillRequestsOcr() {
+        val result = decide(
+            signal(
+                "com.google.android.youtube",
+                emptyList(),
+                setOf("slim_status_bar_player_container")
+            )
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.SLOP, result.classification)
+        assertEquals(true, result.needsMoreText)
+    }
+
     // --- Generic app & game blocking ---
 
     @Test

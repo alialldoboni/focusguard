@@ -157,19 +157,46 @@ class OnDeviceClassifier {
     )
 
     /**
-     * Known YouTube playback container resource ids. These are the active player
-     * chrome nodes YouTube renders (long-form player, background mini-player and
-     * Shorts player). Matching any of them proves a video is actually rendered,
-     * which matters most on OEMs like Realme/ColorOS that suppress the text tree.
+     * FULL-SCREEN watch chrome. Only these prove a video/shorts session actually
+     * fills the screen — sufficient to trigger Path B OCR and to satisfy the
+     * "focused player interface" requirement for a SLOP decision.
      */
-    private val knownPlayerContainerIds = setOf(
-        "slim_status_bar_player_container",
+    private val focusedPlayerContainerIds = setOf(
         "watch_player_overlay",
         "player_view",
         "player_controls_view",
         "reel_recycler",
         "shorts_player_page_container",
         "reel_player_page_container"
+    )
+
+    /**
+     * Background / auxiliary chrome that can linger on the home feed or
+     * navigation tabs while a video plays in the mini-player. These must never
+     * count as a focused player interface and must never alone trigger OCR of
+     * the home feed.
+     */
+    private val backgroundPlayerContainerIds = setOf(
+        "slim_status_bar_player_container"
+    )
+
+    /**
+     * Substrings identifying non-focused chrome (mini-player bars, Shorts
+     * progress bars, shelves, thumbnails, previews). Excluded from both the
+     * Path B trigger and the Shorts-container detector so static home-screen
+     * elements never look like an active watch/shorts session.
+     */
+    private val backgroundChromeTokens = listOf(
+        "status_bar", "mini_player", "time_bar", "shelf", "thumbnail", "progress", "preview"
+    )
+
+    /**
+     * Substrings identifying browse/home-feed chrome (bottom navigation, tab
+     * bars). Used to detect that a lingering background mini-player belongs to
+     * the home feed rather than a focused watch page.
+     */
+    private val browseViewTokens = listOf(
+        "bottom_tab", "bottom_nav", "nav_bar", "main_nav", "home_tab", "pill_bar"
     )
 
     /**
@@ -385,18 +412,25 @@ class OnDeviceClassifier {
         Regex("""\b${Regex.escape(word)}\b""").findAll(text).count()
 
     /**
-     * Strong, unambiguous evidence of a focused video player interface:
-     * one of the known player container resource ids, an active Shorts
-     * container, or player-control keywords in text/content descriptions.
-     * Weak substring matches (e.g. a home autoplay preview) do NOT qualify.
+     * Strong, unambiguous evidence of a FOCUSED video player interface:
+     * a full-screen player container, an active Shorts container, or
+     * player-control keywords in text/content descriptions. Background chrome
+     * (mini-player bars, progress bars, shelves) does NOT qualify, so a
+     * lingering background mini-player on the home feed can neither defeat the
+     * home-feed protection nor satisfy the Shorts gate.
      */
     private fun hasFocusedPlayerInterface(
         signal: ScreenSignal,
         fullText: String
     ): Boolean {
-        if (knownPlayerContainerIds.any { it in signal.viewIds }) return true
-        if (isShortsContainer(signal)) return true
+        if (hasFocusedPlayerContainer(signal)) return true
         if (hasPlayerControls(fullText)) return true
+        return false
+    }
+
+    private fun hasFocusedPlayerContainer(signal: ScreenSignal): Boolean {
+        if (focusedPlayerContainerIds.any { it in signal.viewIds }) return true
+        if (isShortsContainer(signal)) return true
         return false
     }
 
@@ -436,20 +470,32 @@ class OnDeviceClassifier {
     /** True when a rendered Shorts player/feed container is present in the tree. */
     private fun isShortsContainer(signal: ScreenSignal): Boolean =
         signal.viewIds.any { id ->
-            shortsContainerTokens.any { id.contains(it) }
+            !isBackgroundChrome(id) && shortsContainerTokens.any { id.contains(it) }
         }
 
+    private fun isBackgroundChrome(id: String): Boolean =
+        backgroundChromeTokens.any { it in id }
+
+    private fun hasBrowseChrome(signal: ScreenSignal): Boolean =
+        signal.viewIds.any { id -> browseViewTokens.any { it in id } }
+
     /**
-     * True when an active player container is rendered: one of the known
-     * resource ids, a Shorts container, or any view id mentioning a player-ish
-     * token (`player`, `overlay`, `controls`) that catches OEM/version variants.
+     * True when the current screen shows a focused player session: a full-screen
+     * player container, an active Shorts container, or an OEM/version variant id
+     * mentioning player-ish tokens (with background chrome excluded). A lingering
+     * background mini-player only counts when the screen is NOT browse/home, so
+     * the home feed never forces Path B OCR.
      */
     private fun hasActivePlayerContainer(signal: ScreenSignal): Boolean {
-        if (knownPlayerContainerIds.any { it in signal.viewIds }) return true
+        if (focusedPlayerContainerIds.any { it in signal.viewIds }) return true
         if (isShortsContainer(signal)) return true
-        return signal.viewIds.any { id ->
-            id.contains("player") || id.contains("overlay") || id.contains("controls")
+        val playerChrome = signal.viewIds.any { id ->
+            !isBackgroundChrome(id) &&
+                (id.contains("player") || id.contains("overlay") || id.contains("controls"))
         }
+        if (playerChrome) return true
+        val backgroundMiniPlayer = signal.viewIds.any { it in backgroundPlayerContainerIds }
+        return backgroundMiniPlayer && !hasBrowseChrome(signal)
     }
 
     /**
