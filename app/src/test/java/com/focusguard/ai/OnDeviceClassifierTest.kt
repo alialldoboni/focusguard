@@ -297,6 +297,84 @@ class OnDeviceClassifierTest {
         assertEquals(false, result.needsMoreText)
     }
 
+    // --- HOME FEED / BROWSE PROTECTION (Path B OCR reading recommendation tiles) ---
+
+    @Test
+    fun homeFeedDenseTilesAreAllowedEvenWithWeakPlayerContainer() {
+        val result = decide(
+            signal(
+                "com.google.android.youtube",
+                listOf(
+                    "Home", "Subscriptions",
+                    "5 Amazing Tech Gadgets 2.1M views 3 days ago",
+                    "Cooking Basics 5M views 1 day ago",
+                    "Gaming Highlights 800K views 2 days ago"
+                ),
+                setOf("player_container")
+            )
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.ALLOWED, result.classification)
+    }
+
+    @Test
+    fun homeFeedNavHeadersAreAllowedEvenWithWeakPlayerContainer() {
+        val result = decide(
+            signal(
+                "com.google.android.youtube",
+                listOf(
+                    "Home", "Subscriptions", "Library",
+                    "A random video 1.2M views"
+                ),
+                setOf("player_container")
+            )
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.ALLOWED, result.classification)
+    }
+
+    @Test
+    fun homeFeedShortsTabWithWeakContainerIsAllowed() {
+        val result = decide(
+            signal(
+                "com.google.android.youtube",
+                listOf(
+                    "Home", "Shorts", "Subscriptions",
+                    "5 Amazing Gadgets 2.1M views 3 days ago"
+                ),
+                setOf("player_container")
+            )
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.ALLOWED, result.classification)
+    }
+
+    @Test
+    fun watchScreenWithWeakVariantContainerButControlsStillBlocks() {
+        val result = decide(
+            signal(
+                "com.google.android.youtube",
+                listOf("Mute", "00:12 / 10:00", "A random vlog"),
+                setOf("realme_player_overlay_v2")
+            )
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.SLOP, result.classification)
+    }
+
+    @Test
+    fun watchScreenWithExactContainerBlocksNonProductive() {
+        val result = decide(
+            signal(
+                "com.google.android.youtube",
+                listOf("A random video"),
+                setOf("watch_player_overlay")
+            )
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.SLOP, result.classification)
+    }
+
     // --- Generic app & game blocking ---
 
     @Test

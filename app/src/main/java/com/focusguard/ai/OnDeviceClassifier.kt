@@ -298,6 +298,17 @@ class OnDeviceClassifier {
         fullText: String,
         policy: BlockingPolicy
     ): Decision {
+        // HOME FEED & BROWSE PROTECTION: OCR (Path B) and accessibility text
+        // (Path A) can both surface video titles + "views"/"ago" from
+        // recommendation tiles. If there is no *focused* player interface and the
+        // text looks like the browse feed, this is NOT a watch session — never block.
+        if (!hasFocusedPlayerInterface(signal, fullText) && isBrowseOrHomeText(fullText)) {
+            return Decision(
+                Classification.ALLOWED,
+                "YouTube home or browse feed — nothing to block."
+            )
+        }
+
         if (isShortsActive(signal, fullText)) {
             return if (policy.shortFormBlockingEnabled) {
                 Decision(
@@ -319,6 +330,16 @@ class OnDeviceClassifier {
 
         if (!policy.longFormBlockingEnabled) {
             return Decision(Classification.ALLOWED, "Long-form blocking is disabled.")
+        }
+
+        // SLOP is strictly reserved for real watch screens. A mere substring
+        // container (e.g. a home autoplay preview's `player_container`) with no
+        // control keywords or known player chrome is not enough to block.
+        if (!hasFocusedPlayerInterface(signal, fullText)) {
+            return Decision(
+                Classification.ALLOWED,
+                "No confirmed video player interface."
+            )
         }
 
         val usefulScore = usefulKeywords.count(fullText::contains)
@@ -344,6 +365,51 @@ class OnDeviceClassifier {
     }
 
     /**
+     * Recognises the YouTube home/browse feed from its text: a dense grid of
+     * recommendation tiles (multiple titles each carrying "views" + "ago") or a
+     * set of bottom-navigation headers ("Home", "Subscriptions", "Library", ...).
+     */
+    private fun isBrowseOrHomeText(fullText: String): Boolean {
+        val agoCount = countOccurrences(fullText, "ago")
+        val viewsCount = countOccurrences(fullText, "views")
+        val denseRecommendations = agoCount >= 2 && viewsCount >= 2
+
+        val navHeaders = listOf("home", "subscriptions", "library", "create")
+        val navHeaderCount = navHeaders.count { header ->
+            Regex("""\b${Regex.escape(header)}\b""").containsMatchIn(fullText)
+        }
+        return denseRecommendations || navHeaderCount >= 2
+    }
+
+    private fun countOccurrences(text: String, word: String): Int =
+        Regex("""\b${Regex.escape(word)}\b""").findAll(text).count()
+
+    /**
+     * Strong, unambiguous evidence of a focused video player interface:
+     * one of the known player container resource ids, an active Shorts
+     * container, or player-control keywords in text/content descriptions.
+     * Weak substring matches (e.g. a home autoplay preview) do NOT qualify.
+     */
+    private fun hasFocusedPlayerInterface(
+        signal: ScreenSignal,
+        fullText: String
+    ): Boolean {
+        if (knownPlayerContainerIds.any { it in signal.viewIds }) return true
+        if (isShortsContainer(signal)) return true
+        if (hasPlayerControls(fullText)) return true
+        return false
+    }
+
+    private fun hasPlayerControls(fullText: String): Boolean {
+        if (playerKeywords.any { fullText.contains(it) }) return true
+        if ((fullText.contains("play") || fullText.contains("pause")) &&
+            (fullText.contains("mute") || fullText.contains("seek") ||
+                fullText.contains("fullscreen") || fullText.contains("00:"))
+        ) return true
+        return false
+    }
+
+    /**
      * Shorts detection without relying on specific resource ids. Any node text,
      * contentDescription or active Shorts-container view id containing "shorts",
      * "reel" or "short" counts. A bare "shorts"/"short" text hit only counts
@@ -359,7 +425,10 @@ class OnDeviceClassifier {
         if (shortFormIndicators.any { fullText.contains(it) }) return true
         if (fullText.contains("reel")) return true
         if (fullText.contains("shorts") || fullText.contains("short")) {
-            return hasActivePlayer(signal, fullText)
+            // A bare "shorts"/"short" hit (nav tab, shelf header) only counts as
+            // an actual Shorts session when a focused Shorts player interface is
+            // present, so the home screen never blocks.
+            return hasFocusedPlayerInterface(signal, fullText)
         }
         return false
     }
@@ -392,11 +461,7 @@ class OnDeviceClassifier {
      */
     private fun hasActivePlayer(signal: ScreenSignal, fullText: String): Boolean {
         if (hasActivePlayerContainer(signal)) return true
-        if (playerKeywords.any { fullText.contains(it) }) return true
-        if ((fullText.contains("play") || fullText.contains("pause")) &&
-            (fullText.contains("mute") || fullText.contains("seek") ||
-                fullText.contains("fullscreen") || fullText.contains("00:"))
-        ) return true
+        if (hasPlayerControls(fullText)) return true
         return false
     }
 
