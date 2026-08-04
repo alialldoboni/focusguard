@@ -233,7 +233,7 @@ class OnDeviceClassifierTest {
     // --- PATH B: empty/suppressed text tree (Realme ColorOS, Xiaomi MIUI) ---
 
     @Test
-    fun emptyTextWithSlimStatusBarPlayerRequestsOcr() {
+    fun emptyTextWithSlimStatusBarPlayerAloneIsDormant() {
         val result = decide(
             signal(
                 "com.google.android.youtube",
@@ -242,8 +242,25 @@ class OnDeviceClassifierTest {
             )
         )
 
-        assertEquals(OnDeviceClassifier.Classification.SLOP, result.classification)
-        assertEquals(true, result.needsMoreText)
+        assertEquals(OnDeviceClassifier.Classification.ALLOWED, result.classification)
+        assertEquals(false, result.needsMoreText)
+    }
+
+    @Test
+    fun backgroundChromeOnHomeStaysDormant() {
+        val result = decide(
+            signal(
+                "com.google.android.youtube",
+                emptyList(),
+                setOf(
+                    "action_bar_root", "content", "more_drawer_container",
+                    "slim_status_bar_player_container", "reel_time_bar"
+                )
+            )
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.ALLOWED, result.classification)
+        assertEquals(false, result.needsMoreText)
     }
 
     @Test
@@ -423,12 +440,27 @@ class OnDeviceClassifierTest {
     }
 
     @Test
-    fun backgroundMiniPlayerWithoutBrowseChromeStillRequestsOcr() {
+    fun backgroundMiniPlayerAloneIsDormant() {
         val result = decide(
             signal(
                 "com.google.android.youtube",
                 emptyList(),
                 setOf("slim_status_bar_player_container")
+            )
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.ALLOWED, result.classification)
+        assertEquals(false, result.needsMoreText)
+    }
+
+    @Test
+    fun fullScreenVariantPlayerRequestsOcr() {
+        val result = decide(
+            signal(
+                "com.google.android.youtube",
+                emptyList(),
+                setOf("realme_player_overlay_v2"),
+                playerFullScreen = true
             )
         )
 

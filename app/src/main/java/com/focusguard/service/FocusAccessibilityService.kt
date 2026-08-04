@@ -798,17 +798,40 @@ class FocusAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * View ids whose node geometry could represent a real player. Browse chrome
-     * (shelves, thumbnails, tabs, feed/cards/chips) is excluded up-front so a
-     * large home-feed shelf is never mistaken for a full-screen player.
+     * Active Shorts containers whose bounds genuinely represent a full-screen
+     * Shorts feed/player. Evaluated before the background-chrome exclusion so
+     * `reel_recycler` is never filtered out by the generic "recycler" token.
+     */
+    private val shortsPlayerViewTokens = listOf(
+        "reel_recycler", "reel_player", "reel_container", "reel_page", "reel_view",
+        "shorts_reel", "shorts_player", "shorts_recycler", "shorts_container",
+        "shorts_page", "shorts_feed", "shorts_immersive", "shorts_view"
+    )
+
+    /**
+     * Background / auxiliary chrome that must NEVER contribute to full-screen
+     * geometry. On some OEMs these report inflated bounds (they are full-window
+     * containers that render a small bar inside), which would otherwise fake a
+     * full-screen watch session from the home feed.
+     */
+    private val backgroundViewIdTokens = listOf(
+        "status_bar", "mini_player", "time_bar", "progress", "shelf", "thumbnail",
+        "preview", "tab", "bottom", "feed", "card", "chip", "tile", "drawer",
+        "action_bar", "content", "more_drawer", "recycler", "list", "grid",
+        "header", "menu"
+    )
+
+    /**
+     * View ids whose node geometry can represent a REAL player. Only dedicated
+     * foreground watch components count: a player/overlay/controls container or
+     * an active Shorts container. Background chrome — mini-player bars, Shorts
+     * progress bars, shelves, thumbnails, navigation — is never measured, so it
+     * can neither set `playerFullScreen` nor be treated as an active session.
      */
     private fun isPlayerLikeViewId(id: String): Boolean {
-        if (id.contains("shelf") || id.contains("thumbnail") || id.contains("tab") ||
-            id.contains("bottom") || id.contains("feed") || id.contains("card") ||
-            id.contains("chip") || id.contains("tile")
-        ) return false
-        return id.contains("player") || id.contains("overlay") || id.contains("controls") ||
-            id.contains("reel") || id.contains("shorts") || id.contains("status_bar")
+        if (shortsPlayerViewTokens.any { id.contains(it) }) return true
+        if (backgroundViewIdTokens.any { it in id }) return false
+        return id.contains("player") || id.contains("overlay") || id.contains("controls")
     }
 
     /**

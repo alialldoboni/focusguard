@@ -174,16 +174,6 @@ class OnDeviceClassifier {
     )
 
     /**
-     * Background / auxiliary chrome that can linger on the home feed or
-     * navigation tabs while a video plays in the mini-player. These must never
-     * count as a focused player interface and must never alone trigger OCR of
-     * the home feed.
-     */
-    private val backgroundPlayerContainerIds = setOf(
-        "slim_status_bar_player_container"
-    )
-
-    /**
      * Substrings identifying non-focused chrome (mini-player bars, Shorts
      * progress bars, shelves, thumbnails, previews). Excluded from both the
      * Path B trigger and the Shorts-container detector so static home-screen
@@ -492,13 +482,12 @@ class OnDeviceClassifier {
         signal.viewIds.any { id -> browseViewTokens.any { it in id } }
 
     /**
-     * True when the current screen shows a focused player session: a full-screen
-     * player container (geometry), a full-screen player resource id, an active
-     * Shorts container, or an OEM/version variant id mentioning player-ish
-     * tokens (with background chrome excluded). A lingering background mini-player
-     * only counts when the screen is NOT browse/home, so the home feed never
-     * forces Path B OCR — but a real watch transition always does, even if
-     * residual home chrome is still in the tree.
+     * True when the current screen shows a focused player session. Requires
+     * DEDICATED foreground watch evidence: a full-screen player (geometry), a
+     * full-screen player resource id, or an active Shorts container. OEM/version
+     * variant ids mentioning player-ish tokens only count when the screen is not
+     * browse/home. A background mini-player or a reels bar (`slim_status_bar_player_container`,
+     * `reel_time_bar`) NEVER counts and can never force Path B OCR on its own.
      */
     private fun hasActivePlayerContainer(signal: ScreenSignal): Boolean {
         if (signal.playerFullScreen) return true
@@ -508,9 +497,8 @@ class OnDeviceClassifier {
             !isBackgroundChrome(id) &&
                 (id.contains("player") || id.contains("overlay") || id.contains("controls"))
         }
-        if (playerChrome) return true
-        val backgroundMiniPlayer = signal.viewIds.any { it in backgroundPlayerContainerIds }
-        return backgroundMiniPlayer && !hasBrowseChrome(signal)
+        if (playerChrome && !hasBrowseChrome(signal)) return true
+        return false
     }
 
     /**
