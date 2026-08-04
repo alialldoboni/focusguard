@@ -41,9 +41,15 @@ class OcrPipeline(
         return mutex.withLock {
             if (!inFlight.compareAndSet(null, packageName)) return@withLock ""
             try {
-                val bitmap = captureSource.capture() ?: return@withLock ""
+                val bitmap = try {
+                    captureSource.capture()
+                } catch (_: Exception) {
+                    null
+                } ?: return@withLock ""
                 try {
                     textRecognizer.recognize(bitmap)
+                } catch (_: Exception) {
+                    ""
                 } finally {
                     bitmap.recycle()
                 }

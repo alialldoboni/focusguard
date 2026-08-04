@@ -402,6 +402,7 @@ private fun PowerGuardSection() {
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
+        batteryIgnored = OemBatterySettings.isIgnoringBatteryOptimizations(context)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
