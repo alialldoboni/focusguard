@@ -149,23 +149,48 @@ class OnDeviceClassifier {
         "org.mozilla.firefox"
     )
 
-    private val shortsViewIds = setOf(
-        "reel_recycler",
-        "reel_player_page_container",
-        "shorts_player_page_container"
-    )
-
-    private val longFormPlayerViewIds = setOf(
-        "watch_player_overlay",
-        "player_view",
-        "player_controls_view"
-    )
-
     private val browserUrlViewIds = setOf(
         "url_bar",
         "search_box_text",
         "location_bar",
         "omnibox"
+    )
+
+    /**
+     * Known YouTube playback container resource ids. These are the active player
+     * chrome nodes YouTube renders (long-form player, background mini-player and
+     * Shorts player). Matching any of them proves a video is actually rendered,
+     * which matters most on OEMs like Realme/ColorOS that suppress the text tree.
+     */
+    private val knownPlayerContainerIds = setOf(
+        "slim_status_bar_player_container",
+        "watch_player_overlay",
+        "player_view",
+        "player_controls_view",
+        "reel_recycler",
+        "shorts_player_page_container",
+        "reel_player_page_container"
+    )
+
+    /**
+     * Substring tokens that identify an *active* Shorts container. Deliberately
+     * narrower than a bare "reel"/"shorts" substring so static home-screen nodes
+     * such as `reel_shelf` / `shorts_shelf` never look like a playing Short.
+     */
+    private val shortsContainerTokens = listOf(
+        "reel_recycler", "reel_player", "reel_container", "reel_page", "reel_view",
+        "shorts_reel", "shorts_player", "shorts_recycler", "shorts_container",
+        "shorts_page", "shorts_feed", "shorts_immersive", "shorts_view"
+    )
+
+    /**
+     * Player-control signals exposed by YouTube's UI tree. These appear while a
+     * video is actually playing and are used as evidence of active playback,
+     * because resource ids vary across YouTube versions and OEM builds.
+     */
+    private val playerKeywords = listOf(
+        "pause", "replay", "mute", "fullscreen", "seek bar", "00:",
+        "shorts player", "swipe up for next video", "use this sound"
     )
 
     fun isAlwaysBlockedPackage(packageName: String): Boolean =
@@ -216,18 +241,64 @@ class OnDeviceClassifier {
     }
 
     /**
-     * Evidence-based YouTube handling. FocusGuard never blocks YouTube just for
-     * being open:
-     *  - Shorts: blocked only when Shorts UI is actually detected.
-     *  - Long-form: blocked only while the player overlay is active, unless the
-     *    visible title/channel matches useful-content keywords.
-     *  - Home / browse (no player): always allowed.
+     * Dual-path YouTube decision engine.
+     *
+     * PATH A (text tree available — Samsung/Pixel/stock AOSP): titles, Shorts
+     * keywords and the productive whitelist are evaluated directly from the
+     * accessibility text, no OCR needed.
+     *
+     * PATH B (text tree empty/suppressed — Realme ColorOS, Xiaomi MIUI/HyperOS):
+     * YouTube is foreground but the nodes expose no text. If an active player
+     * container is actually rendered, return [Decision.needsMoreText] so the
+     * service triggers a single-frame ScreenCapture / ML Kit OCR scan and
+     * re-runs classification on the recognized text.
+     *
+     * Safeguard: the home feed / browse screen never triggers a block — static
+     * "Shorts" icons and shelf nodes are not treated as playback, and Path B
+     * requires a real player container before OCR is even attempted.
      */
     private fun decideYouTube(signal: ScreenSignal, policy: BlockingPolicy): Decision {
         val fullText = signal.texts.joinToString(" ").lowercase()
-        val isShorts = signal.viewIds.any { it in shortsViewIds } ||
-            containsShortForm(signal.texts, fullText)
-        if (isShorts) {
+
+        // ---- PATH A: accessibility text tree is available ----
+        if (fullText.isNotBlank()) {
+            return decideYouTubeFromText(signal, fullText, policy)
+        }
+
+        // ---- PATH B: text tree empty/suppressed ----
+        if (!hasActivePlayerContainer(signal)) {
+            return Decision(
+                Classification.ALLOWED,
+                "No active YouTube video player detected."
+            )
+        }
+        if (isShortsContainer(signal)) {
+            return if (policy.shortFormBlockingEnabled) {
+                Decision(
+                    Classification.SLOP,
+                    "YouTube Shorts and short-form content are blocked by your " +
+                        "FocusGuard policy."
+                )
+            } else {
+                Decision(Classification.ALLOWED, "Short-form blocking is disabled.")
+            }
+        }
+        if (!policy.longFormBlockingEnabled) {
+            return Decision(Classification.ALLOWED, "Long-form blocking is disabled.")
+        }
+        return Decision(
+            Classification.SLOP,
+            "A YouTube video is playing but its content could not be read.",
+            needsMoreText = true
+        )
+    }
+
+    private fun decideYouTubeFromText(
+        signal: ScreenSignal,
+        fullText: String,
+        policy: BlockingPolicy
+    ): Decision {
+        if (isShortsActive(signal, fullText)) {
             return if (policy.shortFormBlockingEnabled) {
                 Decision(
                     Classification.SLOP,
@@ -239,8 +310,7 @@ class OnDeviceClassifier {
             }
         }
 
-        val overlayActive = signal.viewIds.any { it in longFormPlayerViewIds }
-        if (!overlayActive) {
+        if (!hasActivePlayer(signal, fullText)) {
             return Decision(
                 Classification.ALLOWED,
                 "No active YouTube video player detected."
@@ -249,14 +319,6 @@ class OnDeviceClassifier {
 
         if (!policy.longFormBlockingEnabled) {
             return Decision(Classification.ALLOWED, "Long-form blocking is disabled.")
-        }
-
-        if (fullText.isBlank()) {
-            return Decision(
-                Classification.SLOP,
-                "A YouTube video is playing but its title could not be read.",
-                needsMoreText = true
-            )
         }
 
         val usefulScore = usefulKeywords.count(fullText::contains)
@@ -279,6 +341,63 @@ class OnDeviceClassifier {
                     "Long-form video could not be verified as useful."
                 )
         }
+    }
+
+    /**
+     * Shorts detection without relying on specific resource ids. Any node text,
+     * contentDescription or active Shorts-container view id containing "shorts",
+     * "reel" or "short" counts. A bare "shorts"/"short" text hit only counts
+     * while playback is present, so the home screen's "Shorts" tab never blocks
+     * on open.
+     */
+    private fun isShortsActive(signal: ScreenSignal, fullText: String): Boolean {
+        if (isShortsContainer(signal)) return true
+        if (signal.texts.any {
+            val normalized = it.lowercase()
+            normalized.startsWith("selected:") && normalized.contains("short")
+        }) return true
+        if (shortFormIndicators.any { fullText.contains(it) }) return true
+        if (fullText.contains("reel")) return true
+        if (fullText.contains("shorts") || fullText.contains("short")) {
+            return hasActivePlayer(signal, fullText)
+        }
+        return false
+    }
+
+    /** True when a rendered Shorts player/feed container is present in the tree. */
+    private fun isShortsContainer(signal: ScreenSignal): Boolean =
+        signal.viewIds.any { id ->
+            shortsContainerTokens.any { id.contains(it) }
+        }
+
+    /**
+     * True when an active player container is rendered: one of the known
+     * resource ids, a Shorts container, or any view id mentioning a player-ish
+     * token (`player`, `overlay`, `controls`) that catches OEM/version variants.
+     */
+    private fun hasActivePlayerContainer(signal: ScreenSignal): Boolean {
+        if (knownPlayerContainerIds.any { it in signal.viewIds }) return true
+        if (isShortsContainer(signal)) return true
+        return signal.viewIds.any { id ->
+            id.contains("player") || id.contains("overlay") || id.contains("controls")
+        }
+    }
+
+    /**
+     * Active-playback evidence: a rendered player container or player-control
+     * keywords in text/content descriptions ("Pause", "Replay", "Mute",
+     * "Fullscreen", "Seek bar", "00:" timecodes, ...). "Play"/"Pause" alone is
+     * only trusted when paired with another control signal, so home-feed cards
+     * don't false-positive.
+     */
+    private fun hasActivePlayer(signal: ScreenSignal, fullText: String): Boolean {
+        if (hasActivePlayerContainer(signal)) return true
+        if (playerKeywords.any { fullText.contains(it) }) return true
+        if ((fullText.contains("play") || fullText.contains("pause")) &&
+            (fullText.contains("mute") || fullText.contains("seek") ||
+                fullText.contains("fullscreen") || fullText.contains("00:"))
+        ) return true
+        return false
     }
 
     /**

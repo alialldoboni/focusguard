@@ -168,6 +168,135 @@ class OnDeviceClassifierTest {
         assertEquals(OnDeviceClassifier.Classification.ALLOWED, result.classification)
     }
 
+    @Test
+    fun playerControlsTextIndicatesActivePlayback() {
+        val result = decide(
+            signal(
+                "com.google.android.youtube",
+                listOf("Mute", "00:12 / 10:00", "Fullscreen", "A random vlog")
+            )
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.SLOP, result.classification)
+    }
+
+    @Test
+    fun playerControlsWithProductiveTitleAreAllowed() {
+        val result = decide(
+            signal(
+                "com.google.android.youtube",
+                listOf("Mute", "Pause", "Advanced Kotlin programming tutorial")
+            )
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.PRODUCTIVE, result.classification)
+    }
+
+    @Test
+    fun shortsWordDetectedWhilePlayingIsBlocked() {
+        val result = decide(
+            signal(
+                "com.google.android.youtube",
+                listOf("Shorts", "Mute", "Some creator name")
+            )
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.SLOP, result.classification)
+    }
+
+    @Test
+    fun shortsTabOnHomeDoesNotBlock() {
+        val result = decide(
+            signal(
+                "com.google.android.youtube",
+                listOf("Shorts", "Home", "Subscriptions", "Trending now")
+            )
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.ALLOWED, result.classification)
+    }
+
+    @Test
+    fun playerViewIdVariantSubstringDetectsPlayback() {
+        val result = decide(
+            signal(
+                "com.google.android.youtube",
+                listOf("Some video"),
+                setOf("youtube_shorts_reel_view")
+            )
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.SLOP, result.classification)
+    }
+
+    // --- PATH B: empty/suppressed text tree (Realme ColorOS, Xiaomi MIUI) ---
+
+    @Test
+    fun emptyTextWithSlimStatusBarPlayerRequestsOcr() {
+        val result = decide(
+            signal(
+                "com.google.android.youtube",
+                emptyList(),
+                setOf("slim_status_bar_player_container")
+            )
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.SLOP, result.classification)
+        assertEquals(true, result.needsMoreText)
+    }
+
+    @Test
+    fun emptyTextWithUnknownPlayerVariantRequestsOcr() {
+        val result = decide(
+            signal(
+                "com.google.android.youtube",
+                emptyList(),
+                setOf("realme_player_overlay_v2")
+            )
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.SLOP, result.classification)
+        assertEquals(true, result.needsMoreText)
+    }
+
+    @Test
+    fun emptyTextOnHomeWithoutPlayerIsAllowed() {
+        val result = decide(
+            signal("com.google.android.youtube", emptyList(), emptySet())
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.ALLOWED, result.classification)
+        assertEquals(false, result.needsMoreText)
+    }
+
+    @Test
+    fun emptyTextWithShortsShelfDoesNotBlock() {
+        val result = decide(
+            signal(
+                "com.google.android.youtube",
+                emptyList(),
+                setOf("reel_shelf", "shorts_shelf")
+            )
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.ALLOWED, result.classification)
+        assertEquals(false, result.needsMoreText)
+    }
+
+    @Test
+    fun emptyTextWithVariantShortsContainerIsBlocked() {
+        val result = decide(
+            signal(
+                "com.google.android.youtube",
+                emptyList(),
+                setOf("shorts_reel_view_container")
+            )
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.SLOP, result.classification)
+        assertEquals(false, result.needsMoreText)
+    }
+
     // --- Generic app & game blocking ---
 
     @Test

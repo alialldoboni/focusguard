@@ -377,6 +377,14 @@ class FocusAccessibilityService : AccessibilityService() {
 
         val stable = stabilizeYouTubeDecision(packageName, decision)
         if (stable == decision && decision.needsMoreText) {
+            // PATH B: text tree empty/suppressed (Realme/ColorOS/Xiaomi) but a
+            // player container is active — read the frame via OCR, then re-decide.
+            if (classifier.isYouTubePackage(packageName)) {
+                android.util.Log.d(
+                    "FocusGuard",
+                    "PATH B: YouTube text tree empty, player container active -> OCR for $packageName"
+                )
+            }
             runOcrClassification(packageName, signal, policy)
             return
         }
@@ -672,6 +680,7 @@ class FocusAccessibilityService : AccessibilityService() {
         packageName: String
     ): ScreenSignal {
         val texts = mutableListOf<String>()
+        val descriptions = mutableListOf<String>()
         val viewIds = mutableSetOf<String>()
         try {
             fun walk(node: AccessibilityNodeInfo, depth: Int) {
@@ -686,7 +695,7 @@ class FocusAccessibilityService : AccessibilityService() {
                         ?.let { texts.add(if (node.isSelected) "selected:$it" else it) }
                     node.contentDescription?.toString()
                         ?.takeIf { it.length in 1..200 }
-                        ?.let { texts.add(it) }
+                        ?.let { descriptions.add(if (node.isSelected) "selected:$it" else it) }
                     for (index in 0 until node.childCount) {
                         node.getChild(index)?.let { walk(it, depth + 1) }
                     }
@@ -696,10 +705,21 @@ class FocusAccessibilityService : AccessibilityService() {
             walk(root, 0)
         } catch (_: Exception) {
         }
-        val contentTexts = if (texts.isEmpty() && lastEventText.isNotEmpty()) {
+
+        if (classifier.isYouTubePackage(packageName)) {
+            android.util.Log.d(
+                "FocusGuard",
+                "YouTube window: texts=$texts descriptions=$descriptions viewIds=$viewIds"
+            )
+        }
+
+        val allTexts = (texts + descriptions)
+            .distinct()
+            .take(40)
+        val contentTexts = if (allTexts.isEmpty() && lastEventText.isNotEmpty()) {
             listOf(lastEventText)
         } else {
-            texts.distinct().take(40)
+            allTexts
         }
         return ScreenSignal(packageName, contentTexts, viewIds)
     }
