@@ -1,19 +1,22 @@
 package com.focusguard.ai
 
 /**
- * What the accessibility service could observe on screen: visible text and the
+ * What the accessibility service could observe on screen: visible text, the
  * resource ids (normalized, e.g. `watch_player_overlay`) of the nodes in the
- * active window. The classifier uses both so it can tell "the Shorts feed",
- * "an active long-form player" and "YouTube's home screen" apart instead of
- * blocking just because YouTube is in the foreground.
+ * active window, and whether a player-like container actually occupies most of
+ * the screen (`playerFullScreen`). Geometry is the reliable way to tell a
+ * genuine full-screen watch session from a lingering background mini-player on
+ * the home feed, even when residual home chrome is still present in the tree.
  */
 data class ScreenSignal(
     val packageName: String,
     val texts: List<String> = emptyList(),
-    val viewIds: Set<String> = emptySet()
+    val viewIds: Set<String> = emptySet(),
+    val playerFullScreen: Boolean = false
 ) {
     val signature: String
-        get() = texts.joinToString("|") + "::" + viewIds.sorted().joinToString(",")
+        get() = texts.joinToString("|") + "::" + viewIds.sorted().joinToString(",") +
+            "::" + playerFullScreen
 
     fun withText(text: String): ScreenSignal =
         copy(texts = (texts + text).distinct())
@@ -219,6 +222,9 @@ class OnDeviceClassifier {
         "pause", "replay", "mute", "fullscreen", "seek bar", "00:",
         "shorts player", "swipe up for next video", "use this sound"
     )
+
+    /** Active video duration timestamps such as `0:00 / 10:00` or `12:34 / 25:00`. */
+    private val timecodePattern = Regex("""\d{1,2}:\d{2}\s*/\s*\d{1,2}:\d{2}""")
 
     fun isAlwaysBlockedPackage(packageName: String): Boolean =
         packageName in socialMediaPackages
@@ -429,12 +435,14 @@ class OnDeviceClassifier {
     }
 
     private fun hasFocusedPlayerContainer(signal: ScreenSignal): Boolean {
+        if (signal.playerFullScreen) return true
         if (focusedPlayerContainerIds.any { it in signal.viewIds }) return true
         if (isShortsContainer(signal)) return true
         return false
     }
 
     private fun hasPlayerControls(fullText: String): Boolean {
+        if (hasActiveTimecode(fullText)) return true
         if (playerKeywords.any { fullText.contains(it) }) return true
         if ((fullText.contains("play") || fullText.contains("pause")) &&
             (fullText.contains("mute") || fullText.contains("seek") ||
@@ -442,6 +450,10 @@ class OnDeviceClassifier {
         ) return true
         return false
     }
+
+    /** Active video duration timestamps, e.g. `0:00 / 10:00` or `12:34 / 25:00`. */
+    private fun hasActiveTimecode(fullText: String): Boolean =
+        timecodePattern.containsMatchIn(fullText)
 
     /**
      * Shorts detection without relying on specific resource ids. Any node text,
@@ -481,12 +493,15 @@ class OnDeviceClassifier {
 
     /**
      * True when the current screen shows a focused player session: a full-screen
-     * player container, an active Shorts container, or an OEM/version variant id
-     * mentioning player-ish tokens (with background chrome excluded). A lingering
-     * background mini-player only counts when the screen is NOT browse/home, so
-     * the home feed never forces Path B OCR.
+     * player container (geometry), a full-screen player resource id, an active
+     * Shorts container, or an OEM/version variant id mentioning player-ish
+     * tokens (with background chrome excluded). A lingering background mini-player
+     * only counts when the screen is NOT browse/home, so the home feed never
+     * forces Path B OCR — but a real watch transition always does, even if
+     * residual home chrome is still in the tree.
      */
     private fun hasActivePlayerContainer(signal: ScreenSignal): Boolean {
+        if (signal.playerFullScreen) return true
         if (focusedPlayerContainerIds.any { it in signal.viewIds }) return true
         if (isShortsContainer(signal)) return true
         val playerChrome = signal.viewIds.any { id ->

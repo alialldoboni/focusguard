@@ -9,8 +9,9 @@ class OnDeviceClassifierTest {
     private fun signal(
         packageName: String,
         texts: List<String> = emptyList(),
-        viewIds: Set<String> = emptySet()
-    ) = ScreenSignal(packageName, texts, viewIds)
+        viewIds: Set<String> = emptySet(),
+        playerFullScreen: Boolean = false
+    ) = ScreenSignal(packageName, texts, viewIds, playerFullScreen)
 
     private fun decide(
         signal: ScreenSignal,
@@ -433,6 +434,68 @@ class OnDeviceClassifierTest {
 
         assertEquals(OnDeviceClassifier.Classification.SLOP, result.classification)
         assertEquals(true, result.needsMoreText)
+    }
+
+    // --- Full-screen geometry: the watch-transition discriminator ---
+
+    @Test
+    fun fullScreenPlayerForcesOcrEvenWithResidualBrowseChrome() {
+        val result = decide(
+            signal(
+                "com.google.android.youtube",
+                emptyList(),
+                setOf("slim_status_bar_player_container", "bottom_tab", "feed"),
+                playerFullScreen = true
+            )
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.SLOP, result.classification)
+        assertEquals(true, result.needsMoreText)
+    }
+
+    @Test
+    fun miniPlayerBarOnHomeStaysDormantEvenWithPlayerChrome() {
+        val result = decide(
+            signal(
+                "com.google.android.youtube",
+                emptyList(),
+                setOf("slim_status_bar_player_container", "bottom_tab", "thumbnail"),
+                playerFullScreen = false
+            )
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.ALLOWED, result.classification)
+        assertEquals(false, result.needsMoreText)
+    }
+
+    @Test
+    fun fullScreenWatchWithResidualHomeTextIsNotSwallowed() {
+        val result = decide(
+            signal(
+                "com.google.android.youtube",
+                listOf(
+                    "Home", "Subscriptions",
+                    "A random video 1.2M views",
+                    "0:12 / 10:00"
+                ),
+                setOf("watch_player_overlay"),
+                playerFullScreen = true
+            )
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.SLOP, result.classification)
+    }
+
+    @Test
+    fun activeTimecodeDetectsWatchState() {
+        val result = decide(
+            signal(
+                "com.google.android.youtube",
+                listOf("12:34 / 25:00", "A random video")
+            )
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.SLOP, result.classification)
     }
 
     // --- Generic app & game blocking ---

@@ -14,11 +14,13 @@ import android.content.pm.ServiceInfo
 import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.Rect
 import android.graphics.Typeface
 import android.os.Build
 import android.os.PowerManager
 import android.os.SystemClock
 import android.provider.Settings
+import android.util.DisplayMetrics
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
@@ -73,6 +75,13 @@ class FocusAccessibilityService : AccessibilityService() {
     private val textRecognizer = OcrTextRecognizer()
     private val ocrPipeline = OcrPipeline(captureProvider, textRecognizer)
     private val userSettings = FocusGuardApplication.userSettings
+
+    private val screenWidth: Int by lazy {
+        maxOf(1, resources.displayMetrics.widthPixels)
+    }
+    private val screenHeight: Int by lazy {
+        maxOf(1, resources.displayMetrics.heightPixels)
+    }
 
     private var lastPackage = ""
     private var lastEventText = ""
@@ -155,6 +164,8 @@ class FocusAccessibilityService : AccessibilityService() {
         private const val SCAN_INTERVAL_MS = 5_000L
         private const val SCREEN_OFF_SCAN_INTERVAL_MS = 30_000L
         private const val OVERLAY_FALLBACK_DURATION_MS = 6_000L
+        private const val FULL_SCREEN_WIDTH_RATIO = 0.6f
+        private const val FULL_SCREEN_HEIGHT_RATIO = 0.4f
 
         fun isEnabled(context: Context): Boolean {
             val component = ComponentName(context, FocusAccessibilityService::class.java)
@@ -728,6 +739,8 @@ class FocusAccessibilityService : AccessibilityService() {
         val texts = mutableListOf<String>()
         val descriptions = mutableListOf<String>()
         val viewIds = mutableSetOf<String>()
+        var largestPlayerWidth = 0
+        var largestPlayerHeight = 0
         try {
             fun walk(node: AccessibilityNodeInfo, depth: Int) {
                 if (depth > 6) return
@@ -735,7 +748,19 @@ class FocusAccessibilityService : AccessibilityService() {
                     node.viewIdResourceName
                         ?.takeIf { it.isNotBlank() }
                         ?.substringAfterLast('/')
-                        ?.let { viewIds.add(it) }
+                        ?.let { id ->
+                            viewIds.add(id)
+                            if (isPlayerLikeViewId(id)) {
+                                val bounds = Rect()
+                                node.getBoundsInScreen(bounds)
+                                if (bounds.width() * bounds.height() >
+                                    largestPlayerWidth * largestPlayerHeight
+                                ) {
+                                    largestPlayerWidth = bounds.width()
+                                    largestPlayerHeight = bounds.height()
+                                }
+                            }
+                        }
                     node.text?.toString()
                         ?.takeIf { it.length in 1..200 }
                         ?.let { texts.add(if (node.isSelected) "selected:$it" else it) }
@@ -752,10 +777,12 @@ class FocusAccessibilityService : AccessibilityService() {
         } catch (_: Exception) {
         }
 
+        val playerFullScreen = isFullScreenPlayer(largestPlayerWidth, largestPlayerHeight)
         if (classifier.isYouTubePackage(packageName)) {
             android.util.Log.d(
                 "FocusGuard",
-                "YouTube window: texts=$texts descriptions=$descriptions viewIds=$viewIds"
+                "YouTube window: texts=$texts descriptions=$descriptions " +
+                    "viewIds=$viewIds playerFullScreen=$playerFullScreen"
             )
         }
 
@@ -767,7 +794,36 @@ class FocusAccessibilityService : AccessibilityService() {
         } else {
             allTexts
         }
-        return ScreenSignal(packageName, contentTexts, viewIds)
+        return ScreenSignal(packageName, contentTexts, viewIds, playerFullScreen)
+    }
+
+    /**
+     * View ids whose node geometry could represent a real player. Browse chrome
+     * (shelves, thumbnails, tabs, feed/cards/chips) is excluded up-front so a
+     * large home-feed shelf is never mistaken for a full-screen player.
+     */
+    private fun isPlayerLikeViewId(id: String): Boolean {
+        if (id.contains("shelf") || id.contains("thumbnail") || id.contains("tab") ||
+            id.contains("bottom") || id.contains("feed") || id.contains("card") ||
+            id.contains("chip") || id.contains("tile")
+        ) return false
+        return id.contains("player") || id.contains("overlay") || id.contains("controls") ||
+            id.contains("reel") || id.contains("shorts") || id.contains("status_bar")
+    }
+
+    /**
+     * A player-like node occupying most of the screen proves a full-screen watch
+     * session. This is the reliable transition signal: the watch player covers
+     * the display while a background mini-player bar is only ~10% tall, so the
+     * home feed can never be mistaken for a watch page even when residual home
+     * chrome lingers in the tree after tapping a video.
+     */
+    private fun isFullScreenPlayer(width: Int, height: Int): Boolean {
+        if (width <= 0 || height <= 0) return false
+        val widthRatio = width.toFloat() / screenWidth
+        val heightRatio = height.toFloat() / screenHeight
+        return widthRatio >= FULL_SCREEN_WIDTH_RATIO &&
+            heightRatio >= FULL_SCREEN_HEIGHT_RATIO
     }
 
     private fun shouldIgnorePackage(packageName: String): Boolean =
