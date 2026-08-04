@@ -79,4 +79,50 @@ class OcrPipelineTest {
         // (cooldown -> Skipped) instead of hanging forever.
         assertEquals(OcrResult.Skipped, pipeline.recognize("pkg"))
     }
+
+    @Test
+    fun captureFailureEntersLongCooldown() = runBlocking {
+        var captureCount = 0
+        val pipeline = OcrPipeline(
+            object : CaptureSource {
+                override suspend fun capture(): Bitmap? {
+                    captureCount++
+                    return null
+                }
+            },
+            object : TextRecognizer {
+                override suspend fun recognize(bitmap: Bitmap): String = ""
+            },
+            cooldownMs = 0,
+            captureFailureCooldownMs = 60_000
+        )
+
+        // First attempt fails -> NoText and the long failure cooldown arms.
+        assertEquals(OcrResult.NoText, pipeline.recognize("pkg"))
+        // Even with the short cooldown disabled, the failure cooldown blocks retries.
+        assertEquals(OcrResult.Skipped, pipeline.recognize("pkg"))
+        assertEquals(1, captureCount)
+    }
+
+    @Test
+    fun disabledCooldownsAllowImmediateRetry() = runBlocking {
+        var captureCount = 0
+        val pipeline = OcrPipeline(
+            object : CaptureSource {
+                override suspend fun capture(): Bitmap? {
+                    captureCount++
+                    return null
+                }
+            },
+            object : TextRecognizer {
+                override suspend fun recognize(bitmap: Bitmap): String = ""
+            },
+            cooldownMs = 0,
+            captureFailureCooldownMs = 0
+        )
+
+        assertEquals(OcrResult.NoText, pipeline.recognize("pkg"))
+        assertEquals(OcrResult.NoText, pipeline.recognize("pkg"))
+        assertEquals(2, captureCount)
+    }
 }

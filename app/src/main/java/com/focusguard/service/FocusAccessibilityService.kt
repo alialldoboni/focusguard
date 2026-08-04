@@ -390,6 +390,12 @@ class FocusAccessibilityService : AccessibilityService() {
         if (stable == decision && decision.needsMoreText) {
             // PATH B: text tree empty/suppressed (Realme/ColorOS/Xiaomi) but a
             // player container is active — read the frame via OCR, then re-decide.
+            if (ocrPipeline.isInCaptureFailureCooldown()) {
+                // Screenshot capture is on cooldown after a recent failure (e.g. a
+                // secure watch page). Gracefully bypass OCR — no capture, no log or
+                // CPU spam — until the cooldown elapses.
+                return
+            }
             if (classifier.isYouTubePackage(packageName)) {
                 android.util.Log.d(
                     "FocusGuard",

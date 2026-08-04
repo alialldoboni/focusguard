@@ -30,33 +30,45 @@ sealed interface OcrResult {
 /**
  * Coordinates screen capture + OCR as a single non-blocking, serialized flow.
  *
- * - Duplicate in-flight requests return [OcrResult.Skipped] instead of stacking,
- *   preventing both out-of-order completion races and premature classification
- *   against an empty frame while the real OCR is still running.
- * - A cooldown stops rapid retries when OCR keeps failing (e.g. secure windows),
- *   which previously caused repeated full-res captures and battery drain.
- * - The caller suspends until a result is available; the main thread is never
- *   blocked because capture and ML Kit run off-thread.
+ * - Duplicate in-flight requests return [OcrResult.Skipped] instead of stacking.
+ * - A short attempt cooldown stops rapid retries after any frame.
+ * - A long capture-failure cooldown (default 25s) kicks in after a screenshot
+ *   times out or fails (e.g. secure watch pages), so subsequent scan ticks
+ *   gracefully bypass OCR instead of hammering `takeScreenshot()` every 5s.
+ * - A hard ceiling on a single attempt releases the mutex and resets `inFlight`
+ *   even if capture or OCR hangs.
+ * - ZERO-RETENTION: the captured bitmap is recycled in a `finally` the instant
+ *   OCR completes; nothing is written to disk or retained between passes.
  */
 class OcrPipeline(
     private val captureSource: CaptureSource,
     private val textRecognizer: TextRecognizer,
-    private val attemptTimeoutMs: Long = DEFAULT_ATTEMPT_TIMEOUT_MS
+    private val attemptTimeoutMs: Long = DEFAULT_ATTEMPT_TIMEOUT_MS,
+    private val cooldownMs: Long = COOLDOWN_MS,
+    private val captureFailureCooldownMs: Long = CAPTURE_FAILURE_COOLDOWN_MS
 ) {
 
     private val mutex = Mutex()
     private val inFlight = AtomicReference<String?>(null)
     private val lastAttemptNanos = AtomicLong(0L)
+    private val lastCaptureFailureNanos = AtomicLong(0L)
+
+    fun isInCaptureFailureCooldown(): Boolean =
+        System.nanoTime() - lastCaptureFailureNanos.get() <
+            captureFailureCooldownMs * 1_000_000L
 
     suspend fun recognize(packageName: String): OcrResult {
         if (inFlight.get() != null) return OcrResult.Skipped
         val now = System.nanoTime()
-        if (now - lastAttemptNanos.get() < COOLDOWN_NANOS) return OcrResult.Skipped
+        if (now - lastAttemptNanos.get() < cooldownMs * 1_000_000L) {
+            return OcrResult.Skipped
+        }
+        if (now - lastCaptureFailureNanos.get() < captureFailureCooldownMs * 1_000_000L) {
+            // Graceful bypass during the failure cooldown: no capture, no spam.
+            return OcrResult.Skipped
+        }
 
-        // Hard ceiling on a single attempt. If capture or OCR ever hangs, the
-        // attempt is cancelled, the mutex is released and inFlight is reset in
-        // the inner `finally`, so a bad frame can never wedge the pipeline.
-        return withTimeoutOrNull(attemptTimeoutMs) {
+        val attempt = withTimeoutOrNull(attemptTimeoutMs) {
             mutex.withLock {
                 if (!inFlight.compareAndSet(null, packageName)) {
                     return@withLock OcrResult.Skipped
@@ -66,7 +78,11 @@ class OcrPipeline(
                         captureSource.capture()
                     } catch (_: Exception) {
                         null
-                    } ?: return@withLock OcrResult.NoText
+                    }
+                    if (bitmap == null) {
+                        lastCaptureFailureNanos.set(System.nanoTime())
+                        return@withLock OcrResult.NoText
+                    }
                     try {
                         val text = try {
                             textRecognizer.recognize(bitmap)
@@ -79,6 +95,8 @@ class OcrPipeline(
                             OcrResult.Text(text)
                         }
                     } finally {
+                        // Zero-retention: release native pixel memory the instant
+                        // OCR completes (SLOP, PRODUCTIVE or ALLOWED alike).
                         bitmap.recycle()
                     }
                 } finally {
@@ -86,12 +104,18 @@ class OcrPipeline(
                     inFlight.set(null)
                 }
             }
-        } ?: OcrResult.NoText
+        }
+        if (attempt == null) {
+            // The whole attempt timed out (hung capture or OCR) — treat as failure.
+            lastCaptureFailureNanos.set(System.nanoTime())
+            return OcrResult.NoText
+        }
+        return attempt
     }
 
     companion object {
         const val COOLDOWN_MS = 5_000L
-        const val COOLDOWN_NANOS = COOLDOWN_MS * 1_000_000L
+        const val CAPTURE_FAILURE_COOLDOWN_MS = 25_000L
         const val DEFAULT_ATTEMPT_TIMEOUT_MS = 10_000L
     }
 }
