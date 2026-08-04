@@ -1,5 +1,6 @@
 package com.focusguard.ocr
 
+import android.graphics.Bitmap
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
@@ -11,23 +12,27 @@ import org.junit.Test
 class OcrPipelineTest {
 
     @Test
-    fun duplicateInFlightRequestIsDropped() = runBlocking {
+    fun duplicateInFlightRequestIsSkipped() = runBlocking {
         var captureCount = 0
         val gate = CompletableDeferred<Unit>()
         val pipeline = OcrPipeline(
-            CaptureSource {
-                captureCount++
-                gate.await()
-                null
+            object : CaptureSource {
+                override suspend fun capture(): Bitmap? {
+                    captureCount++
+                    gate.await()
+                    return null
+                }
             },
-            TextRecognizer { "" }
+            object : TextRecognizer {
+                override suspend fun recognize(bitmap: Bitmap): String = ""
+            }
         )
 
         val first = launch { pipeline.recognize("pkg") }
         yield()
         val second = async { pipeline.recognize("pkg") }
 
-        assertEquals("", second.await())
+        assertEquals(OcrResult.Skipped, second.await())
         gate.complete(Unit)
         first.join()
         assertEquals(1, captureCount)
@@ -37,15 +42,19 @@ class OcrPipelineTest {
     fun failedAttemptTriggersCooldown() = runBlocking {
         var captureCount = 0
         val pipeline = OcrPipeline(
-            CaptureSource {
-                captureCount++
-                null
+            object : CaptureSource {
+                override suspend fun capture(): Bitmap? {
+                    captureCount++
+                    return null
+                }
             },
-            TextRecognizer { "" }
+            object : TextRecognizer {
+                override suspend fun recognize(bitmap: Bitmap): String = ""
+            }
         )
 
-        assertEquals("", pipeline.recognize("pkg"))
-        assertEquals("", pipeline.recognize("pkg"))
+        assertEquals(OcrResult.NoText, pipeline.recognize("pkg"))
+        assertEquals(OcrResult.Skipped, pipeline.recognize("pkg"))
         assertEquals(1, captureCount)
     }
 }

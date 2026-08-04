@@ -20,8 +20,14 @@ class ServiceLifecycleReceiver : BroadcastReceiver() {
         val pendingResult = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                val enabled = FocusGuardApplication.database.preferencesDao()
-                    .getEnabled() ?: false
+                val enabled = try {
+                    FocusGuardApplication.database.preferencesDao()
+                        .getEnabled() ?: false
+                } catch (_: Exception) {
+                    // Credential-encrypted storage is not available before the
+                    // first unlock after boot; retry on the next boot event.
+                    false
+                }
                 if (!enabled) return@launch
                 startProtection(context)
             } finally {

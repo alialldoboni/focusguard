@@ -39,6 +39,7 @@ import com.focusguard.db.entity.RelapseEvent
 import com.focusguard.db.entity.ScreenTimeEvent
 import com.focusguard.db.entity.ScrollSession
 import com.focusguard.ocr.OcrPipeline
+import com.focusguard.ocr.OcrResult
 import com.focusguard.ocr.OcrTextRecognizer
 import com.focusguard.ocr.ScreenCaptureProvider
 import com.focusguard.tracker.ScreenTimeTracker
@@ -422,14 +423,18 @@ class FocusAccessibilityService : AccessibilityService() {
         packageName: String,
         fallbackContent: List<String>
     ) {
-        val recognizedText = ocrPipeline.recognize(packageName)
+        val result = ocrPipeline.recognize(packageName)
         val enabled = FocusGuardApplication.database.preferencesDao()
             .getEnabled() ?: false
         if (!enabled || packageName != lastPackage) return
-        val content = recognizedText
-            .takeIf { it.isNotBlank() && it != "Device locked" }
-            ?.let(::listOf)
-            ?: fallbackContent
+        val content = when (result) {
+            OcrResult.Skipped -> return
+            OcrResult.NoText -> fallbackContent
+            is OcrResult.Text -> result.value
+                .takeIf { it.isNotBlank() && it != "Device locked" }
+                ?.let(::listOf)
+                ?: fallbackContent
+        }
         lastContent = content
         classifyAndApply(packageName, content, fromOcr = true)
     }
