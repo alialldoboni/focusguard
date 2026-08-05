@@ -533,11 +533,13 @@ class OnDeviceClassifier(
             val normalized = it.lowercase()
             normalized.startsWith("selected:") && normalized.contains("short")
         }) return true
-        // A real long-form player exposes an elapsed/total timecode ("0:33 / 3:16").
-        // When that is present, any "shorts"/"reels"/"tiktok" text is a comment or
-        // suggestion-rail entry — the page is long-form, never a Short.
-        if (hasActiveTimecode(fullText)) return false
+        // Strong Shorts-player indicators always win (only appear on Shorts).
         if (shortFormIndicators.any { fullText.contains(it) }) return true
+        // A real long-form player shows an elapsed timecode like "0:44" or
+        // "0:44 / 3:16" (the status-bar clock is always 2-digit minutes, so it
+        // never matches). When present, any "shorts"/"reels" text is a comment or
+        // suggestion-rail entry — the page is long-form, never a Short.
+        if (hasLongFormPlayerTimecode(fullText)) return false
         // Otherwise require an actual Shorts WORD ("shorts", "reels", "reel") — never
         // a bare "short" substring — and a focused Shorts player interface.
         if (Regex("""\b(reel|reels|shorts)\b""").containsMatchIn(fullText)) {
@@ -545,6 +547,15 @@ class OnDeviceClassifier(
         }
         return false
     }
+
+    /**
+     * True when a long-form player timecode is visible: a single-digit-minute
+     * elapsed time ("0:44") or the clean "0:44 / 3:16" form. The device clock is
+     * always two-digit minutes ("12:59"), so it never matches.
+     */
+    private fun hasLongFormPlayerTimecode(fullText: String): Boolean =
+        Regex("""\b[0-9]:\d{2}\b""").containsMatchIn(fullText) ||
+            hasActiveTimecode(fullText)
 
     /** True when a rendered Shorts player/feed container is present in the tree. */
     private fun isShortsContainer(signal: ScreenSignal): Boolean =

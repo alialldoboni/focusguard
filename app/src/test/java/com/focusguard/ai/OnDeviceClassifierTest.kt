@@ -680,6 +680,30 @@ class OnDeviceClassifierTest {
     }
 
     @Test
+    fun watchPageWithSingleDigitTimecodeIsNotShorts() {
+        // OCR mangled the timecode to just "0:44" (lost the "/ 3:16"); the page has
+        // a "Shorts" suggestion entry and a 2-digit clock, but the single-digit
+        // player timecode proves this is long-form.
+        val result = decide(
+            signal(
+                "com.google.android.youtube",
+                listOf(
+                    "0:44",
+                    "Advanced Kotlin programming tutorial",
+                    "Subscribe",
+                    "Comments 728",
+                    "@channel 36K likes 783K views 11mo ago",
+                    "Shorts"
+                ),
+                setOf("watch_player_overlay")
+            )
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.PRODUCTIVE, result.classification)
+        assertEquals(false, result.reason.contains("Short", ignoreCase = true))
+    }
+
+    @Test
     fun fullScreenPlayerWithBrowseTextStillEvaluated() {
         // A geometrically full-screen player overrides the autoplay-preview guard,
         // so browse-like text under a real player is still scored.
