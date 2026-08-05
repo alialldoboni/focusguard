@@ -134,7 +134,7 @@ fun FocusGuardApp(
                         colors = editorialNavigationColors()
                     )
                     NavigationBarItem(
-                        icon = { Icon(if (currentTab == 1) Icons.Filled.Insights else Icons.Outlined.Insights, null) },
+                        icon = { Icon(if (currentTab == 1) Icons.Filled.DateRange else Icons.Outlined.DateRange, null) },
                         label = { Text("Insights") },
                         selected = currentTab == 1,
                         onClick = { currentTab = 1 },
@@ -190,12 +190,18 @@ fun FocusGuardApp(
 }
 
 @Composable
-fun HomeTab(
+fun TodayTab(
     serviceEnabled: Boolean,
     accessibilityEnabled: Boolean,
+    vm: MainViewModel,
     onToggle: () -> Unit
 ) {
     val guardActive = serviceEnabled && accessibilityEnabled
+    val todayMs by vm.todayScreenTimeMs.collectAsState()
+    val weeklyRelapses by vm.weeklyRelapseCount.collectAsState()
+    val scrollSessions by vm.scrollSessionCount.collectAsState()
+    val topApps by vm.weeklyTopApps.collectAsState()
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -205,8 +211,8 @@ fun HomeTab(
     ) {
         Spacer(Modifier.height(28.dp))
         BrandHeader()
-        Spacer(Modifier.height(38.dp))
-        Eyebrow("ATTENTION PROTECTION")
+        Spacer(Modifier.height(30.dp))
+        Eyebrow("TODAY")
         Spacer(Modifier.height(12.dp))
         Text(
             text = if (guardActive) "Your attention,\nprotected." else "Put your focus\nback in control.",
@@ -215,99 +221,124 @@ fun HomeTab(
         )
         Spacer(Modifier.height(16.dp))
         Text(
-            text = "FocusGuard evaluates what is visible on your screen and steps in when content stops being useful.",
+            text = "Here's what FocusGuard caught for you today.",
             style = MaterialTheme.typography.bodyLarge,
             color = TextSecondary
         )
-        Spacer(Modifier.height(30.dp))
+        Spacer(Modifier.height(28.dp))
 
+        // Hero: status ring + stats
         Card(
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(14.dp),
+            shape = RoundedCornerShape(20.dp),
             border = BorderStroke(1.dp, if (guardActive) MintDeep else ForestBorder),
-            colors = CardDefaults.cardColors(containerColor = CardBg)
+            colors = CardDefaults.cardColors(containerColor = Color.Transparent)
         ) {
-            Column(modifier = Modifier.padding(22.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        modifier = Modifier
-                            .size(9.dp)
-                            .background(
-                                if (guardActive) Mint else WarmSand,
-                                CircleShape
-                            )
-                    )
-                    Spacer(Modifier.width(10.dp))
-                    Text(
-                        text = when {
-                            guardActive -> "GUARD ACTIVE"
-                            serviceEnabled -> "SETUP REQUIRED"
-                            else -> "GUARD PAUSED"
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (guardActive) Mint else WarmSand
-                    )
-                }
-                Spacer(Modifier.height(18.dp))
-                Text(
-                    text = when {
-                        guardActive -> "Protection is running"
-                        serviceEnabled -> "Finish accessibility setup"
-                        else -> "Protection is paused"
-                    },
-                    style = MaterialTheme.typography.titleLarge,
-                    color = TextPrimary
-                )
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    text = when {
-                        guardActive -> "Content is checked privately on this device."
-                        serviceEnabled -> "Accessibility access is needed to see and evaluate content."
-                        else -> "Enable FocusGuard to start filtering distractions."
-                    },
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = TextSecondary
-                )
-                Spacer(Modifier.height(22.dp))
-                Button(
-                    onClick = onToggle,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (guardActive) ForestRaised else Mint,
-                        contentColor = if (guardActive) MintSoft else DeepForest
-                    ),
-                    border = if (guardActive) BorderStroke(1.dp, ForestBorder) else null,
-                    shape = RoundedCornerShape(9.dp),
-                    modifier = Modifier.fillMaxWidth().height(50.dp)
+            Column {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(
+                            Brush.verticalGradient(listOf(MintDeep.copy(alpha = 0.35f), CardBg)),
+                            RoundedCornerShape(20.dp)
+                        )
                 ) {
-                    Text(
-                        when {
-                            guardActive -> "Pause protection"
-                            serviceEnabled -> "Open accessibility"
-                            else -> "Enable protection"
-                        },
-                        style = MaterialTheme.typography.labelLarge
+                    Row(
+                        modifier = Modifier.padding(22.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        StatusRing(active = guardActive, todayMs = todayMs)
+                        Spacer(Modifier.width(20.dp))
+                        Column {
+                            Text(
+                                text = when {
+                                    guardActive -> "GUARD ACTIVE"
+                                    serviceEnabled -> "SETUP REQUIRED"
+                                    else -> "GUARD PAUSED"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (guardActive) Mint else WarmSand
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                text = when {
+                                    guardActive -> "Protection is running"
+                                    serviceEnabled -> "Finish accessibility setup"
+                                    else -> "Protection is paused"
+                                },
+                                style = MaterialTheme.typography.titleLarge,
+                                color = TextPrimary
+                            )
+                        }
+                    }
+                }
+                HorizontalDivider(color = ForestBorder)
+                Row(modifier = Modifier.padding(vertical = 20.dp)) {
+                    StatTile(
+                        label = "SCREEN TIME",
+                        value = formatCompact(todayMs),
+                        valueColor = if (guardActive) Mint else TextSecondary,
+                        modifier = Modifier.weight(1f)
+                    )
+                    StatTile(
+                        label = "BLOCKED",
+                        value = weeklyRelapses.toString(),
+                        valueColor = Coral,
+                        modifier = Modifier.weight(1f)
+                    )
+                    StatTile(
+                        label = "SCROLL",
+                        value = scrollSessions.toString(),
+                        valueColor = WarmSand,
+                        modifier = Modifier.weight(1f)
                     )
                 }
             }
         }
 
-        Spacer(Modifier.height(38.dp))
-        Eyebrow("HOW IT WORKS")
+        Spacer(Modifier.height(28.dp))
+        Button(
+            onClick = onToggle,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = if (guardActive) ForestRaised else Mint,
+                contentColor = if (guardActive) MintSoft else DeepForest
+            ),
+            border = if (guardActive) BorderStroke(1.dp, ForestBorder) else null,
+            shape = RoundedCornerShape(9.dp),
+            modifier = Modifier.fillMaxWidth().height(50.dp)
+        ) {
+            Text(
+                when {
+                    guardActive -> "Pause protection"
+                    serviceEnabled -> "Open accessibility"
+                    else -> "Enable protection"
+                },
+                style = MaterialTheme.typography.labelLarge
+            )
+        }
+
+        Spacer(Modifier.height(34.dp))
+        Eyebrow("TOP APPS THIS WEEK")
         Spacer(Modifier.height(14.dp))
         Card(
-            modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(14.dp),
             border = BorderStroke(1.dp, ForestBorder),
-            colors = CardDefaults.cardColors(containerColor = DeepForest)
+            colors = CardDefaults.cardColors(containerColor = CardBg)
         ) {
-            Column {
-                Step("01", "Reads visible text, using on-device OCR when needed")
-                HorizontalDivider(color = ForestBorder)
-                Step("02", "Blocks social-media apps and short-form feeds")
-                HorizontalDivider(color = ForestBorder)
-                Step("03", "Allows YouTube only when the video looks useful")
-                HorizontalDivider(color = ForestBorder)
-                Step("04", "Explains the decision, then returns to Home")
+            Column(modifier = Modifier.padding(22.dp)) {
+                if (topApps.isEmpty()) {
+                    Text(
+                        "No usage recorded this week yet.",
+                        color = TextSecondary,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                } else {
+                    val maxMs = topApps.maxOfOrNull { it.usageDurationMs }?.coerceAtLeast(1L) ?: 1L
+                    topApps.take(5).forEach { app ->
+                        AppUsageBar(app.appLabel, app.usageDurationMs, maxMs)
+                        Spacer(Modifier.height(10.dp))
+                    }
+                }
             }
         }
         Spacer(Modifier.height(30.dp))
@@ -315,27 +346,219 @@ fun HomeTab(
 }
 
 @Composable
-fun Step(num: String, text: String) {
-    Row(
-        modifier = Modifier.padding(horizontal = 18.dp, vertical = 17.dp),
-        verticalAlignment = Alignment.Top
-    ) {
-        Text(
-            text = num,
-            color = Mint,
-            fontFamily = FontFamily.Monospace,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Medium
-        )
-        Spacer(Modifier.width(16.dp))
-        Text(
-            text = text,
-            color = TextSecondary,
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.weight(1f)
-        )
+private fun StatusRing(active: Boolean, todayMs: Long) {
+    val goalMs = 90L * 60L * 1000L
+    val fraction = (todayMs.toFloat() / goalMs).coerceIn(0f, 1f)
+    Box(contentAlignment = Alignment.Center, modifier = Modifier.size(96.dp)) {
+        Canvas(Modifier.fillMaxSize()) {
+            val stroke = 8.dp.toPx()
+            val inset = stroke / 2f
+            val arcSize = Size(size.width - stroke, size.height - stroke)
+            drawArc(
+                color = ForestRaised,
+                startAngle = -90f,
+                sweepAngle = 360f,
+                useCenter = false,
+                topLeft = Offset(inset, inset),
+                size = arcSize,
+                style = Stroke(width = stroke, cap = StrokeCap.Round)
+            )
+            drawArc(
+                color = if (active) Mint else WarmSand,
+                startAngle = -90f,
+                sweepAngle = 360f * fraction,
+                useCenter = false,
+                topLeft = Offset(inset, inset),
+                size = arcSize,
+                style = Stroke(width = stroke, cap = StrokeCap.Round)
+            )
+        }
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(formatCompact(todayMs), color = TextPrimary, style = MaterialTheme.typography.titleLarge)
+            Text("today", color = TextSecondary, style = MaterialTheme.typography.labelSmall)
+        }
     }
 }
+
+@Composable
+private fun StatTile(label: String, value: String, valueColor: Color, modifier: Modifier = Modifier) {
+    Column(modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(value, color = valueColor, style = MaterialTheme.typography.headlineMedium)
+        Spacer(Modifier.height(4.dp))
+        Text(label, color = TextSecondary, style = MaterialTheme.typography.labelSmall)
+    }
+}
+
+@Composable
+private fun AppUsageBar(label: String, durationMs: Long, maxMs: Long) {
+    Column {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(label, color = TextPrimary, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+            Text(formatDuration(durationMs), color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
+        }
+        Spacer(Modifier.height(6.dp))
+        val fraction = (durationMs.toFloat() / maxMs).coerceIn(0f, 1f)
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(6.dp)
+                .background(ForestRaised, CircleShape)
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(fraction)
+                    .height(6.dp)
+                    .background(Mint, CircleShape)
+            )
+        }
+    }
+}
+
+@Composable
+fun InsightsTab(vm: MainViewModel) {
+    val events by vm.allScreenTimeEvents.collectAsState(initial = emptyList())
+    val relapses by vm.recentRelapses.collectAsState(initial = emptyList())
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(DarkBg)
+            .padding(horizontal = 22.dp)
+            .verticalScroll(rememberScrollState())
+    ) {
+        Spacer(Modifier.height(28.dp))
+        BrandHeader()
+        Spacer(Modifier.height(30.dp))
+        Eyebrow("INSIGHTS")
+        Spacer(Modifier.height(12.dp))
+        Text(
+            "Your focus history",
+            style = MaterialTheme.typography.headlineMedium,
+            color = TextPrimary
+        )
+        Spacer(Modifier.height(10.dp))
+        Text(
+            "See where your time went and what FocusGuard intercepted.",
+            style = MaterialTheme.typography.bodyLarge,
+            color = TextSecondary
+        )
+        Spacer(Modifier.height(30.dp))
+
+        Eyebrow("WEEKLY TREND")
+        Spacer(Modifier.height(14.dp))
+        Card(
+            shape = RoundedCornerShape(14.dp),
+            border = BorderStroke(1.dp, ForestBorder),
+            colors = CardDefaults.cardColors(containerColor = CardBg)
+        ) {
+            Column(modifier = Modifier.padding(22.dp)) {
+                WeeklyTrendBars(events)
+            }
+        }
+
+        Spacer(Modifier.height(30.dp))
+        Eyebrow("INTERCEPTED SESSIONS")
+        Spacer(Modifier.height(14.dp))
+        Card(
+            shape = RoundedCornerShape(14.dp),
+            border = BorderStroke(1.dp, ForestBorder),
+            colors = CardDefaults.cardColors(containerColor = CardBg)
+        ) {
+            Column(modifier = Modifier.padding(horizontal = 18.dp, vertical = 6.dp)) {
+                if (relapses.isEmpty()) {
+                    Text(
+                        "No intercepted sessions yet. Distracting content will appear here.",
+                        color = TextSecondary,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(vertical = 18.dp)
+                    )
+                } else {
+                    relapses.take(20).forEach { relapse ->
+                        Row(
+                            modifier = Modifier.padding(vertical = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(8.dp)
+                                    .background(Coral, CircleShape)
+                            )
+                            Spacer(Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(relapse.appLabel, color = TextPrimary, style = MaterialTheme.typography.titleMedium)
+                                Text(
+                                    relapse.screenTextSummary.take(80),
+                                    color = TextSecondary,
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Text(formatDate(relapse.timestamp), color = TextSecondary, style = MaterialTheme.typography.labelSmall)
+                        }
+                        HorizontalDivider(color = ForestBorder)
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(30.dp))
+    }
+}
+
+private data class DayBucket(val label: String, val ms: Long)
+
+@Composable
+private fun WeeklyTrendBars(events: List<ScreenTimeEvent>) {
+    val todayStart = LocalDate.now().atStartOfDay(ZoneId.systemDefault()).toInstant().epochSecond * 1000
+    val dayMs = 86_400_000L
+    val buckets = (6 downTo 0).map { off ->
+        val start = todayStart - off * dayMs
+        DayBucket(
+            label = SimpleDateFormat("EEE", Locale.US).format(Date(start)),
+            ms = events.filter { it.timestamp in start until start + dayMs }.sumOf { it.durationMs }
+        )
+    }
+    val maxMs = buckets.maxOfOrNull { it.ms }?.coerceAtLeast(1L) ?: 1L
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.Bottom,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        buckets.forEach { bucket ->
+            Column(
+                modifier = Modifier.weight(1f),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(formatCompact(bucket.ms), color = TextSecondary, fontSize = 10.sp)
+                Spacer(Modifier.height(6.dp))
+                val h = ((bucket.ms.toFloat() / maxMs) * 120f).coerceAtLeast(4f)
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(h.dp)
+                        .background(Mint, RoundedCornerShape(4.dp))
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(bucket.label, color = TextSecondary, style = MaterialTheme.typography.labelSmall)
+            }
+        }
+    }
+}
+
+private fun formatDuration(ms: Long): String {
+    val minutes = ms / 60_000L
+    if (minutes < 60L) return "${minutes}m"
+    return "${minutes / 60}h ${minutes % 60}m"
+}
+
+private fun formatCompact(ms: Long): String {
+    val minutes = ms / 60_000L
+    if (minutes < 60L) return "${minutes}m"
+    if (minutes % 60L == 0L) return "${minutes / 60}h"
+    return "${minutes / 60}h${minutes % 60}m"
+}
+
+private fun formatDate(timestamp: Long): String =
+    SimpleDateFormat("MMM d, HH:mm", Locale.US).format(Date(timestamp))
 
 @Composable
 fun SettingsTab(
