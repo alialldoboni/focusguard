@@ -385,6 +385,17 @@ class OnDeviceClassifier(
             )
         }
 
+        // FAIL-SAFE: if the screen is a player but shows NO actual content (e.g. the
+        // user went fullscreen before the title was readable — only Mute/Pause/timecode
+        // captured), we have nothing to classify. Never guess a block on an unreadable
+        // video; treat it as dormant.
+        if (!hasMeaningfulTitle(fullText)) {
+            return Decision(
+                Classification.ALLOWED,
+                "No readable video information — no action taken."
+            )
+        }
+
         // LOCAL AI FIRST: when a model is loaded and confident, its decision wins.
         // Otherwise fall back to the legacy keyword baseline. This point is shared
         // by PATH A (accessibility text) and PATH B (OCR text), so the AI applies
@@ -407,6 +418,33 @@ class OnDeviceClassifier(
         }
         return scoreYouTubeByHeuristic(fullText)
     }
+
+    /**
+     * True when the text contains enough real content to classify. Player-control
+     * chrome, timecodes, watch-page metadata and navigation words are stripped; a
+     * fullscreen frame showing only controls ("Mute Pause 0:33 / 3:16 Fullscreen")
+     * yields nothing meaningful and must never be scored/blocked.
+     */
+    private fun hasMeaningfulTitle(fullText: String): Boolean {
+        val stripped = fullText
+            .replace(Regex("""\d{1,2}:\d{2}(?:\s*/\s*\d{1,2}:\d{2})?"""), " ")
+            .lowercase()
+        val contentWords = Regex("""[a-z][\w]{2,}""")
+            .findAll(stripped)
+            .map { it.value }
+            .filterNot { it in playerNoiseTokens }
+            .toList()
+        return contentWords.size >= 2
+    }
+
+    private val playerNoiseTokens = setOf(
+        "mute", "pause", "play", "replay", "fullscreen", "seek", "closed", "captions",
+        "subtitles", "more", "menu", "back", "close", "shorts", "reel", "reels",
+        "share", "save", "download", "watch", "later", "playlist", "queue", "loop",
+        "speed", "settings", "comments", "comment", "subscribe", "views", "ago",
+        "like", "likes", "new", "home", "subscriptions", "library", "create",
+        "youtube", "comments"
+    )
 
     /**
      * Runs the local AI classifier (if loaded). Never throws: any failure yields

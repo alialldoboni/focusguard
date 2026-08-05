@@ -704,6 +704,38 @@ class OnDeviceClassifierTest {
     }
 
     @Test
+    fun fullscreenWithoutVideoInfoIsDormant() {
+        // User went fullscreen before the title was readable: only player controls
+        // and a timecode are captured — nothing to classify, so never block.
+        val result = decide(
+            signal(
+                "com.google.android.youtube",
+                listOf("Mute", "Pause", "0:33 / 3:16", "Fullscreen"),
+                setOf("watch_player_overlay")
+            )
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.ALLOWED, result.classification)
+    }
+
+    @Test
+    fun fullscreenWithTitleStillClassifies() {
+        // If the fullscreen overlay exposes the title, it is still scored.
+        val result = decide(
+            signal(
+                "com.google.android.youtube",
+                listOf(
+                    "Mute", "Pause", "0:33 / 3:16", "Fullscreen",
+                    "Advanced Kotlin programming tutorial"
+                ),
+                setOf("watch_player_overlay")
+            )
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.PRODUCTIVE, result.classification)
+    }
+
+    @Test
     fun fullScreenPlayerWithBrowseTextStillEvaluated() {
         // A geometrically full-screen player overrides the autoplay-preview guard,
         // so browse-like text under a real player is still scored.
