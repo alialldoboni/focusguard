@@ -272,7 +272,7 @@ class FocusAccessibilityService : AccessibilityService() {
                 val paneTransition = event.contentChangeTypes and (
                     AccessibilityEvent.CONTENT_CHANGE_TYPE_PANE_APPEARED or
                         AccessibilityEvent.CONTENT_CHANGE_TYPE_PANE_TITLE or
-                        AccessibilityEvent.CONTENT_CHANGE_TYPE_STATE_DESCRIPTION_CHANGED
+                        AccessibilityEvent.CONTENT_CHANGE_TYPE_STATE_DESCRIPTION
                     ) != 0
                 if (paneTransition) requestImmediateScan(ScanTrigger.EVENT)
             }
