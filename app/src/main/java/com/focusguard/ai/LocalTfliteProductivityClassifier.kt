@@ -2,8 +2,8 @@ package com.focusguard.ai
 
 import android.content.Context
 import android.util.Log
-import java.io.BufferedReader
-import java.io.InputStreamReader
+import java.nio.ByteBuffer
+import java.util.Locale
 import org.tensorflow.lite.Interpreter
 
 /**
@@ -59,7 +59,9 @@ class LocalTfliteProductivityClassifier(private val context: Context) : Producti
                 return
             }
 
-            interpreter = Interpreter.loadModelFile(context, MODEL_FILE_NAME)
+            interpreter = Interpreter(
+                ByteBuffer.wrap(context.assets.open(MODEL_FILE_NAME).use { it.readBytes() })
+            )
             vocab = loadVocab()
             if (vocab.isEmpty()) {
                 Log.w(TAG, "AI: vocab file empty — heuristic baseline.")
