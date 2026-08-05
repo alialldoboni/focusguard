@@ -36,10 +36,6 @@ class LocalTfliteProductivityClassifier(private val context: Context) : Producti
     private var initializationAttempted = false
     private var isModelInitialized = false
 
-    init {
-        initializeModelAsync()
-    }
-
     @Synchronized
     private fun initializeModelAsync() {
         if (initializationAttempted) return
@@ -90,6 +86,11 @@ class LocalTfliteProductivityClassifier(private val context: Context) : Producti
     }
 
     override fun isReady(): Boolean {
+        // Lazy, once-only load: the classifier is constructed with the service's
+        // Context before attachBaseContext() runs, so using the context in a
+        // constructor init block would NPE. Loading here (first use, after attach,
+        // typically on Dispatchers.Default) is safe.
+        initializeModelAsync()
         return isModelInitialized && interpreter != null && vocab.isNotEmpty()
     }
 
