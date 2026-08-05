@@ -534,11 +534,12 @@ class OnDeviceClassifier(
             normalized.startsWith("selected:") && normalized.contains("short")
         }) return true
         if (shortFormIndicators.any { fullText.contains(it) }) return true
-        if (fullText.contains("reel")) return true
-        if (fullText.contains("shorts") || fullText.contains("short")) {
-            // A bare "shorts"/"short" hit (nav tab, shelf header) only counts as
-            // an actual Shorts session when a focused Shorts player interface is
-            // present, so the home screen never blocks.
+        // Require an actual Shorts WORD ("shorts", "reels", "reel"), never a bare
+        // "short" substring — a comment or description saying "this video is short"
+        // must not flip a normal long-form watch page into a Shorts block.
+        if (Regex("""\b(reel|reels|shorts)\b""").containsMatchIn(fullText)) {
+            // A Shorts word (nav tab, shelf header, suggestion) only counts as an
+            // actual Shorts session when a focused Shorts player interface is present.
             return hasFocusedPlayerInterface(signal, fullText)
         }
         return false

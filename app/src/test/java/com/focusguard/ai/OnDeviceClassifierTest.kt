@@ -657,6 +657,29 @@ class OnDeviceClassifierTest {
     }
 
     @Test
+    fun watchPageWithShortWordInCommentIsNotShortsBlock() {
+        // A normal long-form watch page whose comment/description contains the word
+        // "short" must NOT be flagged as Shorts.
+        val result = decide(
+            signal(
+                "com.google.android.youtube",
+                listOf(
+                    "0:33 / 3:16",
+                    "Advanced Kotlin programming tutorial",
+                    "@channel 20K likes",
+                    "Subscribe",
+                    "Comments 119",
+                    "this video is short but helpful"
+                ),
+                setOf("watch_player_overlay")
+            )
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.PRODUCTIVE, result.classification)
+        assertEquals(false, result.reason.contains("Short", ignoreCase = true))
+    }
+
+    @Test
     fun fullScreenPlayerWithBrowseTextStillEvaluated() {
         // A geometrically full-screen player overrides the autoplay-preview guard,
         // so browse-like text under a real player is still scored.
