@@ -1,25 +1,59 @@
 package com.focusguard.service
 
 import android.content.Intent
-import android.content.res.ColorStateList
-import android.graphics.Color
-import android.graphics.Typeface
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.view.Gravity
-import android.widget.Button
-import android.widget.FrameLayout
-import android.widget.LinearLayout
-import android.widget.TextView
-import androidx.activity.OnBackPressedCallback
 import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.focusguard.ui.theme.DeepForest
+import com.focusguard.ui.theme.FocusGuardTheme
+import com.focusguard.ui.theme.Mint
+import com.focusguard.ui.theme.TextPrimary
+import com.focusguard.ui.theme.TextSecondary
 
+/**
+ * Blocking screen. Lets the user either go home immediately or pick a timed grace
+ * countdown (5/10/15/30 min): the overlay dismisses, the app keeps working, and
+ * FocusGuard resumes blocking automatically when the countdown ends.
+ */
 class OverlayActivity : ComponentActivity() {
 
     private val handler = Handler(Looper.getMainLooper())
     private var completionBroadcastSent = false
     private var returningHome = false
+    private var graceChosen = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -28,80 +62,46 @@ class OverlayActivity : ComponentActivity() {
         val reason = intent.getStringExtra(EXTRA_REASON)
             ?: "FocusGuard could not confirm that this content is useful."
 
-        val container = FrameLayout(this).apply {
-            setBackgroundColor(Color.argb(250, 7, 29, 25))
+        setContent {
+            FocusGuardTheme {
+                BlockScreen(appLabel = appLabel, reason = reason, onGoHome = ::goHome, onGrace = ::chooseGrace)
+            }
         }
-        val content = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(64, 64, 64, 64)
-            layoutParams = FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                Gravity.CENTER
-            )
-        }
-
-        content.addView(TextView(this).apply {
-            text = "Content blocked"
-            textSize = 32f
-            gravity = Gravity.CENTER
-            typeface = Typeface.create(Typeface.SERIF, Typeface.BOLD)
-            setTextColor(Color.rgb(240, 243, 238))
-        })
-        content.addView(TextView(this).apply {
-            text = appLabel
-            textSize = 20f
-            gravity = Gravity.CENTER
-            setTextColor(Color.rgb(99, 205, 189))
-            setPadding(0, 24, 0, 24)
-        })
-        content.addView(TextView(this).apply {
-            text = reason
-            textSize = 17f
-            gravity = Gravity.CENTER
-            setTextColor(Color.rgb(240, 243, 238))
-            setPadding(0, 0, 0, 28)
-        })
-        content.addView(TextView(this).apply {
-            text = "Closing the blocked app and returning Home in a few seconds."
-            textSize = 14f
-            gravity = Gravity.CENTER
-            setTextColor(Color.rgb(162, 181, 175))
-            setPadding(0, 0, 0, 28)
-        })
-        content.addView(Button(this).apply {
-            text = "Go Home now"
-            backgroundTintList = ColorStateList.valueOf(Color.rgb(99, 205, 189))
-            setTextColor(Color.rgb(7, 29, 25))
-            isAllCaps = false
-            setOnClickListener { beginExit() }
-        })
-
-        container.addView(content)
-        setContentView(container)
 
         onBackPressedDispatcher.addCallback(
             this,
             object : OnBackPressedCallback(true) {
                 override fun handleOnBackPressed() {
-                    beginExit()
+                    goHome()
                 }
             }
         )
-        handler.postDelayed(::beginExit, OVERLAY_DURATION_MS)
+        handler.postDelayed(::goHome, OVERLAY_DURATION_MS)
+    }
+
+    private fun chooseGrace(minutes: Int) {
+        if (graceChosen || returningHome) return
+        graceChosen = true
+        handler.removeCallbacksAndMessages(null)
+        sendBroadcast(
+            Intent(FocusAccessibilityService.ACTION_GRACE_PERIOD)
+                .setPackage(packageName)
+                .putExtra(FocusAccessibilityService.EXTRA_GRACE_MINUTES, minutes)
+        )
+        finishAndRemoveTask()
+    }
+
+    private fun goHome() {
+        if (returningHome) return
+        returningHome = true
+        handler.removeCallbacksAndMessages(null)
+        finishAndRemoveTask()
     }
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
-        sendCompletionBroadcast()
+        if (!graceChosen) sendCompletionBroadcast()
         super.onDestroy()
-    }
-
-    private fun beginExit() {
-        if (returningHome) return
-        returningHome = true
-        finishAndRemoveTask()
     }
 
     private fun sendCompletionBroadcast() {
@@ -116,6 +116,105 @@ class OverlayActivity : ComponentActivity() {
     companion object {
         const val EXTRA_APP_LABEL = "app_label"
         const val EXTRA_REASON = "reason"
-        private const val OVERLAY_DURATION_MS = 4_000L
+        private val GRACE_CHOICES = listOf(5, 10, 15, 30)
+        private const val OVERLAY_DURATION_MS = 10_000L
+    }
+}
+
+@Composable
+private fun BlockScreen(
+    appLabel: String,
+    reason: String,
+    onGoHome: () -> Unit,
+    onGrace: (Int) -> Unit
+) {
+    Surface(modifier = Modifier.fillMaxSize(), color = DeepForest) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 32.dp, vertical = 48.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Icon(
+                Icons.Filled.Lock,
+                contentDescription = null,
+                tint = Mint,
+                modifier = Modifier.size(52.dp)
+            )
+            Spacer(Modifier.height(18.dp))
+            Text(
+                "Content blocked",
+                color = TextPrimary,
+                style = MaterialTheme.typography.headlineMedium,
+                textAlign = TextAlign.Center
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                appLabel,
+                color = Mint,
+                style = MaterialTheme.typography.titleLarge,
+                textAlign = TextAlign.Center
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                reason,
+                color = TextSecondary,
+                style = MaterialTheme.typography.bodyLarge,
+                textAlign = TextAlign.Center
+            )
+            Spacer(Modifier.height(34.dp))
+            Text(
+                "Give me a few more minutes — blocking resumes automatically",
+                color = TextSecondary,
+                style = MaterialTheme.typography.bodyMedium,
+                textAlign = TextAlign.Center
+            )
+            Spacer(Modifier.height(14.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                GRACE_CHOICES.take(2).forEach { minutes ->
+                    GraceChip(minutes) { onGrace(minutes) }
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                GRACE_CHOICES.drop(2).forEach { minutes ->
+                    GraceChip(minutes) { onGrace(minutes) }
+                }
+            }
+            Spacer(Modifier.height(30.dp))
+            Button(
+                onClick = onGoHome,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Mint,
+                    contentColor = DeepForest
+                ),
+                shape = RoundedCornerShape(9.dp),
+                modifier = Modifier.fillMaxWidth().height(50.dp)
+            ) {
+                Text("Go home now", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+            }
+        }
+    }
+}
+
+@Composable
+private fun GraceChip(minutes: Int, onClick: () -> Unit) {
+    OutlinedButton(
+        onClick = onClick,
+        shape = RoundedCornerShape(50),
+        colors = ButtonDefaults.outlinedButtonColors(contentColor = Mint),
+        border = BorderStroke(1.dp, Mint),
+        contentPadding = PaddingValues(vertical = 10.dp),
+        modifier = Modifier.weight(1f)
+    ) {
+        Text("$minutes min", fontWeight = FontWeight.SemiBold)
     }
 }

@@ -115,6 +115,9 @@ class FocusAccessibilityService : AccessibilityService() {
     private var pendingTrigger = ScanTrigger.TICK
     private var lastPlayerLikeIds: Set<String>? = null
 
+    /** Wall-clock (elapsedRealtime) until the user's chosen grace countdown ends. */
+    private var graceUntilElapsed = 0L
+
     private enum class ScanTrigger { TICK, EVENT }
 
     private val stopReceiver = object : BroadcastReceiver() {
@@ -152,6 +155,30 @@ class FocusAccessibilityService : AccessibilityService() {
         }
     }
 
+    /**
+     * The user chose a timed grace period on the block overlay: dismiss the overlay,
+     * let the app keep working for N minutes, then resume blocking automatically.
+     */
+    private val graceReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != ACTION_GRACE_PERIOD) return
+            val minutes = intent.getIntExtra(EXTRA_GRACE_MINUTES, 5)
+                .coerceIn(1, 120)
+            graceUntilElapsed = SystemClock.elapsedRealtime() + minutes * 60_000L
+            overlayInFlight = false
+            finishSlopSession()
+            lastClassifiedPackage = ""
+            lastCacheKey = ""
+            lastContent = emptyList()
+            notifyGrace(minutes)
+            android.util.Log.d(
+                "FocusGuard",
+                "grace: app unlocked for $minutes minutes; blocking resumes at " +
+                    graceUntilElapsed
+            )
+        }
+    }
+
     private val scanRunnable = object : Runnable {
         override fun run() {
             scanScheduled = false
@@ -170,6 +197,8 @@ class FocusAccessibilityService : AccessibilityService() {
         const val ACTION_TOGGLE = "com.focusguard.TOGGLE"
         const val ACTION_RESTART = "com.focusguard.RESTART"
         const val ACTION_OVERLAY_FINISHED = "com.focusguard.OVERLAY_FINISHED"
+        const val ACTION_GRACE_PERIOD = "com.focusguard.GRACE_PERIOD"
+        const val EXTRA_GRACE_MINUTES = "grace_minutes"
         private const val SCAN_INTERVAL_MS = 5_000L
         private const val SCREEN_OFF_SCAN_INTERVAL_MS = 30_000L
         private const val OVERLAY_FALLBACK_DURATION_MS = 6_000L
@@ -302,6 +331,7 @@ class FocusAccessibilityService : AccessibilityService() {
                 unregisterReceiver(toggleReceiver)
                 unregisterReceiver(overlayFinishedReceiver)
                 unregisterReceiver(screenOnReceiver)
+                unregisterReceiver(graceReceiver)
             } catch (_: Exception) {
             }
         }
@@ -572,6 +602,12 @@ class FocusAccessibilityService : AccessibilityService() {
             finishSlopSession()
             return
         }
+        // Timed grace countdown: the user chose "give me X more minutes" on the
+        // overlay, so let the app keep working until the countdown ends, then block.
+        if (SystemClock.elapsedRealtime() < graceUntilElapsed) {
+            finishSlopSession()
+            return
+        }
         if (overlayInFlight) return
 
         if (slopPackage != packageName || slopStartElapsed == 0L) {
@@ -790,6 +826,7 @@ class FocusAccessibilityService : AccessibilityService() {
         lastUsageTickElapsed = 0L
         pendingTrigger = ScanTrigger.TICK
         lastPlayerLikeIds = null
+        graceUntilElapsed = 0L
     }
 
     private fun extractSignal(
@@ -964,6 +1001,20 @@ class FocusAccessibilityService : AccessibilityService() {
         )
     }
 
+    /** Tells the user their chosen grace countdown is running and blocking resumes. */
+    private fun notifyGrace(minutes: Int) {
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.notify(
+            2002,
+            NotificationCompat.Builder(this, "warn")
+                .setContentTitle("FocusGuard — $minutes minute grace period")
+                .setContentText("Blocking resumes automatically after $minutes minutes.")
+                .setSmallIcon(R.drawable.ic_focus_guard_icon)
+                .setAutoCancel(true)
+                .build()
+        )
+    }
+
     private fun buildForegroundNotification(): android.app.Notification {
         val openAppIntent = PendingIntent.getActivity(
             this,
@@ -1014,6 +1065,12 @@ class FocusAccessibilityService : AccessibilityService() {
             this,
             screenOnReceiver,
             IntentFilter(Intent.ACTION_SCREEN_ON),
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+        ContextCompat.registerReceiver(
+            this,
+            graceReceiver,
+            IntentFilter(ACTION_GRACE_PERIOD),
             ContextCompat.RECEIVER_NOT_EXPORTED
         )
     }
