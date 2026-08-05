@@ -533,13 +533,14 @@ class OnDeviceClassifier(
             val normalized = it.lowercase()
             normalized.startsWith("selected:") && normalized.contains("short")
         }) return true
+        // A real long-form player exposes an elapsed/total timecode ("0:33 / 3:16").
+        // When that is present, any "shorts"/"reels"/"tiktok" text is a comment or
+        // suggestion-rail entry — the page is long-form, never a Short.
+        if (hasActiveTimecode(fullText)) return false
         if (shortFormIndicators.any { fullText.contains(it) }) return true
-        // Require an actual Shorts WORD ("shorts", "reels", "reel"), never a bare
-        // "short" substring — a comment or description saying "this video is short"
-        // must not flip a normal long-form watch page into a Shorts block.
+        // Otherwise require an actual Shorts WORD ("shorts", "reels", "reel") — never
+        // a bare "short" substring — and a focused Shorts player interface.
         if (Regex("""\b(reel|reels|shorts)\b""").containsMatchIn(fullText)) {
-            // A Shorts word (nav tab, shelf header, suggestion) only counts as an
-            // actual Shorts session when a focused Shorts player interface is present.
             return hasFocusedPlayerInterface(signal, fullText)
         }
         return false
