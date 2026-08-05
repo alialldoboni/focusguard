@@ -40,7 +40,9 @@ data class BlockingPolicy(
     ).joinToString("|")
 }
 
-class OnDeviceClassifier {
+class OnDeviceClassifier(
+    private val localClassifier: ProductivityClassifier? = null
+) {
 
     enum class Classification { PRODUCTIVE, SLOP, ALLOWED }
 
@@ -49,6 +51,14 @@ class OnDeviceClassifier {
         val reason: String,
         val needsMoreText: Boolean = false
     )
+
+    companion object {
+        /** Min slop probability for the local AI to force a SLOP decision. */
+        const val AI_SLOP_THRESHOLD = 0.6f
+
+        /** Min productive probability for the local AI to force a PRODUCTIVE decision. */
+        const val AI_PRODUCTIVE_THRESHOLD = 0.6f
+    }
 
     private val usefulKeywords = setOf(
         "tutorial", "lecture", "course", "lesson", "learn", "study", "education",
@@ -359,6 +369,46 @@ class OnDeviceClassifier {
             )
         }
 
+        // LOCAL AI FIRST: when a model is loaded and confident, its decision wins.
+        // Otherwise fall back to the legacy keyword baseline. This point is shared
+        // by PATH A (accessibility text) and PATH B (OCR text), so the AI applies
+        // to both evaluation paths.
+        val ai = runAiClassification(fullText)
+        if (ai != null) {
+            return when {
+                ai.label == "slop" && ai.slopScore >= AI_SLOP_THRESHOLD ->
+                    Decision(
+                        Classification.SLOP,
+                        "On-device AI flagged this content as distracting."
+                    )
+                ai.label == "productive" && ai.productiveScore >= AI_PRODUCTIVE_THRESHOLD ->
+                    Decision(
+                        Classification.PRODUCTIVE,
+                        "On-device AI classified this content as useful."
+                    )
+                else -> scoreYouTubeByHeuristic(fullText)
+            }
+        }
+        return scoreYouTubeByHeuristic(fullText)
+    }
+
+    /**
+     * Runs the local AI classifier (if loaded). Never throws: any failure yields
+     * `null` and the caller uses the heuristic baseline. This keeps the pure
+     * classifier unit-testable — no Android/Log calls are made here.
+     */
+    private fun runAiClassification(fullText: String): ClassificationResult? {
+        val classifier = localClassifier ?: return null
+        if (!classifier.isReady()) return null
+        return try {
+            classifier.classify(fullText)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /** Legacy keyword baseline, used when no AI model is loaded or it is uncertain. */
+    private fun scoreYouTubeByHeuristic(fullText: String): Decision {
         val usefulScore = usefulKeywords.count(fullText::contains)
         val distractingScore = distractingKeywords.count(fullText::contains)
 

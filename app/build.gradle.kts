@@ -76,6 +76,11 @@ dependencies {
     // ML Kit Text Recognition (on-device OCR)
     implementation("com.google.mlkit:text-recognition:16.0.1")
 
+    // TensorFlow Lite on-device text classification (local AI productivity scoring)
+    implementation(libs.tensorflow.lite.task.text)
+    implementation(libs.tensorflow.lite)
+    implementation(libs.tensorflow.lite.support.api)
+
     implementation(libs.google.gson)
 
     implementation(libs.jetbrains.coroutines.android)

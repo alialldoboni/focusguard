@@ -613,6 +613,83 @@ class OnDeviceClassifierTest {
         assertEquals(OnDeviceClassifier.Classification.ALLOWED, result.classification)
     }
 
+    // --- Local AI (ProductivityClassifier) integration ---
+
+    private class FakeProductivityClassifier(
+        private val result: ClassificationResult?,
+        private val ready: Boolean = true
+    ) : ProductivityClassifier {
+        override fun isReady(): Boolean = ready
+        override fun classify(text: String): ClassificationResult? = result
+    }
+
+    private fun decideWithAi(
+        signal: ScreenSignal,
+        aiResult: ClassificationResult?,
+        isReady: Boolean = true
+    ) = OnDeviceClassifier(
+        localClassifier = FakeProductivityClassifier(aiResult, isReady)
+    ).decide(signal, BlockingPolicy())
+
+    private fun watchSignal(texts: List<String>) = signal(
+        "com.google.android.youtube",
+        texts,
+        setOf("watch_player_overlay")
+    )
+
+    @Test
+    fun localAiSlopOverridesHeuristic() {
+        val result = decideWithAi(
+            watchSignal(listOf("A random video")),
+            ClassificationResult(label = "slop", slopScore = 0.85f, productiveScore = 0.15f)
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.SLOP, result.classification)
+        assertEquals(true, result.reason.contains("AI", ignoreCase = true))
+    }
+
+    @Test
+    fun localAiProductiveOverridesHeuristic() {
+        // Heuristic alone would SLOP this (no useful keywords), but the AI wins.
+        val result = decideWithAi(
+            watchSignal(listOf("Random cooking vlog 12:34")),
+            ClassificationResult(label = "productive", slopScore = 0.10f, productiveScore = 0.90f)
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.PRODUCTIVE, result.classification)
+    }
+
+    @Test
+    fun localAiLowConfidenceFallsBackToHeuristic() {
+        val result = decideWithAi(
+            watchSignal(listOf("A random video")),
+            ClassificationResult(label = "slop", slopScore = 0.55f, productiveScore = 0.45f)
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.SLOP, result.classification)
+    }
+
+    @Test
+    fun localAiFailureFallsBackToHeuristic() {
+        val result = decideWithAi(
+            watchSignal(listOf("A random video")),
+            aiResult = null
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.SLOP, result.classification)
+    }
+
+    @Test
+    fun localAiNotReadyFallsBackToHeuristic() {
+        val result = decideWithAi(
+            watchSignal(listOf("A random video")),
+            aiResult = ClassificationResult(label = "slop", slopScore = 0.9f, productiveScore = 0.1f),
+            isReady = false
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.SLOP, result.classification)
+    }
+
     // --- Generic app & game blocking ---
 
     @Test

@@ -36,6 +36,7 @@ import com.focusguard.FocusGuardApplication
 import com.focusguard.MainActivity
 import com.focusguard.R
 import com.focusguard.ai.BlockingPolicy
+import com.focusguard.ai.LocalTfliteProductivityClassifier
 import com.focusguard.ai.OnDeviceClassifier
 import com.focusguard.ai.ScreenSignal
 import com.focusguard.db.entity.Preferences
@@ -69,7 +70,7 @@ class FocusAccessibilityService : AccessibilityService() {
             }
     )
     private val handler = android.os.Handler(android.os.Looper.getMainLooper())
-    private val classifier = OnDeviceClassifier()
+    private val classifier = OnDeviceClassifier(LocalTfliteProductivityClassifier(this))
     private val tracker = ScreenTimeTracker()
     private val captureProvider = ScreenCaptureProvider(this)
     private val textRecognizer = OcrTextRecognizer()
