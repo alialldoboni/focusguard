@@ -552,6 +552,67 @@ class OnDeviceClassifierTest {
         assertEquals(OnDeviceClassifier.Classification.SLOP, result.classification)
     }
 
+    // --- Watch-page OCR text must never be swallowed by the browse guard ---
+
+    @Test
+    fun watchPageOcrTextIsNotSwallowedByBrowseGuard() {
+        // Exact scenario from logcat: watch page OCR with channel handle,
+        // likes, views/ago, comments and Subscribe — the suggestion rail below
+        // also contains "views"/"ago" which used to trip the browse guard.
+        val result = decide(
+            signal(
+                "com.google.android.youtube",
+                listOf(
+                    "3:55 @6",
+                    "NEAL FUN",
+                    "Squares are 83.2% circle",
+                    "@webgoatguy 20K likes 758K views 2w ago ...more",
+                    "Comments 1.8K",
+                    "Subscribe...",
+                    "Suggested: Another video 1M views 3 days ago",
+                    "More suggestions 45K views 1 month ago"
+                )
+            )
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.SLOP, result.classification)
+    }
+
+    @Test
+    fun watchPageWithProductiveTitleIsAllowed() {
+        val result = decide(
+            signal(
+                "com.google.android.youtube",
+                listOf(
+                    "@webgoatguy 20K likes",
+                    "Comments 1.8K",
+                    "Subscribe",
+                    "Advanced Kotlin programming tutorial"
+                )
+            )
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.PRODUCTIVE, result.classification)
+    }
+
+    @Test
+    fun channelHandleOnHomeCardIsStillBrowse() {
+        // Channel handles also appear on home video cards; without likes/comments/
+        // subscribe the dense-tile feed must still be treated as browse.
+        val result = decide(
+            signal(
+                "com.google.android.youtube",
+                listOf(
+                    "@channel 1.2M views 2 days ago",
+                    "Home", "Subscriptions",
+                    "Another title 5K views 1 day ago"
+                )
+            )
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.ALLOWED, result.classification)
+    }
+
     // --- Generic app & game blocking ---
 
     @Test

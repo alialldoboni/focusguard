@@ -309,11 +309,16 @@ class OnDeviceClassifier {
         fullText: String,
         policy: BlockingPolicy
     ): Decision {
-        // HOME FEED & BROWSE PROTECTION: OCR (Path B) and accessibility text
-        // (Path A) can both surface video titles + "views"/"ago" from
-        // recommendation tiles. If there is no *focused* player interface and the
-        // text looks like the browse feed, this is NOT a watch session — never block.
-        if (!hasFocusedPlayerInterface(signal, fullText) && isBrowseOrHomeText(fullText)) {
+        // A watch page is present when we have either real playback evidence
+        // (container/controls/timecode) OR unambiguous watch-page text markers
+        // ("likes", "comments", "subscribe") that never appear on home cards.
+        val watchContext = hasActivePlayer(signal, fullText) || hasWatchPageText(fullText)
+
+        // HOME FEED & BROWSE PROTECTION: the browse feed ALSO contains many
+        // "views"/"ago" recommendation tiles, so never treat dense tiles as a
+        // watch session. But a genuine watch page must never be swallowed by this
+        // guard — its suggestion rail trips the same "dense tiles" heuristic.
+        if (!watchContext && isBrowseOrHomeText(fullText)) {
             return Decision(
                 Classification.ALLOWED,
                 "YouTube home or browse feed — nothing to block."
@@ -332,7 +337,7 @@ class OnDeviceClassifier {
             }
         }
 
-        if (!hasActivePlayer(signal, fullText)) {
+        if (!watchContext) {
             return Decision(
                 Classification.ALLOWED,
                 "No active YouTube video player detected."
@@ -345,7 +350,8 @@ class OnDeviceClassifier {
 
         // SLOP is strictly reserved for real watch screens. A mere substring
         // container (e.g. a home autoplay preview's `player_container`) with no
-        // control keywords or known player chrome is not enough to block.
+        // control keywords, known player chrome or watch-page text is not enough
+        // to block.
         if (!hasFocusedPlayerInterface(signal, fullText)) {
             return Decision(
                 Classification.ALLOWED,
@@ -376,6 +382,17 @@ class OnDeviceClassifier {
     }
 
     /**
+     * Unambiguous watch-page text markers that never appear on the home/browse
+     * feed: the like count, the comment section, and the Subscribe button.
+     * (Channel handles like `@channel` are NOT used here — they also appear on
+     * home video cards.)
+     */
+    private fun hasWatchPageText(fullText: String): Boolean =
+        fullText.contains("likes") ||
+            fullText.contains("comments") ||
+            fullText.contains("subscribe")
+
+    /**
      * Recognises the YouTube home/browse feed from its text: a dense grid of
      * recommendation tiles (multiple titles each carrying "views" + "ago") or a
      * set of bottom-navigation headers ("Home", "Subscriptions", "Library", ...).
@@ -397,11 +414,11 @@ class OnDeviceClassifier {
 
     /**
      * Strong, unambiguous evidence of a FOCUSED video player interface:
-     * a full-screen player container, an active Shorts container, or
-     * player-control keywords in text/content descriptions. Background chrome
-     * (mini-player bars, progress bars, shelves) does NOT qualify, so a
-     * lingering background mini-player on the home feed can neither defeat the
-     * home-feed protection nor satisfy the Shorts gate.
+     * a full-screen player container, an active Shorts container, player-control
+     * keywords, or watch-page text markers ("likes"/"comments"/"subscribe").
+     * Background chrome (mini-player bars, progress bars, shelves) does NOT
+     * qualify on its own, so a lingering background mini-player on the home feed
+     * can neither defeat the home-feed protection nor satisfy the Shorts gate.
      */
     private fun hasFocusedPlayerInterface(
         signal: ScreenSignal,
@@ -409,6 +426,7 @@ class OnDeviceClassifier {
     ): Boolean {
         if (hasFocusedPlayerContainer(signal)) return true
         if (hasPlayerControls(fullText)) return true
+        if (hasWatchPageText(fullText)) return true
         return false
     }
 
@@ -511,6 +529,7 @@ class OnDeviceClassifier {
     private fun hasActivePlayer(signal: ScreenSignal, fullText: String): Boolean {
         if (hasActivePlayerContainer(signal)) return true
         if (hasPlayerControls(fullText)) return true
+        if (hasWatchPageText(fullText)) return true
         return false
     }
 

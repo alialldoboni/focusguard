@@ -111,7 +111,6 @@ class FocusAccessibilityService : AccessibilityService() {
     private var fallbackExitRunnable: Runnable? = null
 
     private var pendingTrigger = ScanTrigger.TICK
-    private var lastOcrArmElapsed = 0L
     private var lastPlayerLikeIds: Set<String>? = null
 
     private enum class ScanTrigger { TICK, EVENT }
@@ -172,7 +171,6 @@ class FocusAccessibilityService : AccessibilityService() {
         private const val SCAN_INTERVAL_MS = 5_000L
         private const val SCREEN_OFF_SCAN_INTERVAL_MS = 30_000L
         private const val OVERLAY_FALLBACK_DURATION_MS = 6_000L
-        private const val OCR_ARM_THROTTLE_MS = 5_000L
         private const val FULL_SCREEN_WIDTH_RATIO = 0.6f
         private const val FULL_SCREEN_HEIGHT_RATIO = 0.4f
 
@@ -416,10 +414,8 @@ class FocusAccessibilityService : AccessibilityService() {
         if (classifier.isYouTubePackage(packageName) &&
             signal.texts.isEmpty() &&
             (trigger == ScanTrigger.EVENT || playerMounted) &&
-            !ocrPipeline.isInCaptureFailureCooldown() &&
-            SystemClock.elapsedRealtime() - lastOcrArmElapsed >= OCR_ARM_THROTTLE_MS
+            !ocrPipeline.isInCaptureFailureCooldown()
         ) {
-            lastOcrArmElapsed = SystemClock.elapsedRealtime()
             android.util.Log.d(
                 "FocusGuard",
                 "PATH B: transition detected (event=$trigger, playerMounted=$playerMounted) " +
@@ -767,7 +763,6 @@ class FocusAccessibilityService : AccessibilityService() {
         lastUsagePackage = ""
         lastUsageTickElapsed = 0L
         pendingTrigger = ScanTrigger.TICK
-        lastOcrArmElapsed = 0L
         lastPlayerLikeIds = null
     }
 
