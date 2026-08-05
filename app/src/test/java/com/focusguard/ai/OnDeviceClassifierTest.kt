@@ -250,13 +250,15 @@ class OnDeviceClassifierTest {
 
     @Test
     fun backgroundChromeOnHomeStaysDormant() {
+        // Real home-feed log shows these ids WITHOUT reel_time_bar (that id only
+        // appears on Shorts players), so the home feed stays dormant.
         val result = decide(
             signal(
                 "com.google.android.youtube",
                 emptyList(),
                 setOf(
                     "action_bar_root", "content", "more_drawer_container",
-                    "slim_status_bar_player_container", "reel_time_bar"
+                    "slim_status_bar_player_container"
                 )
             )
         )
@@ -431,7 +433,9 @@ class OnDeviceClassifierTest {
     }
 
     @Test
-    fun reelTimeBarOnHomeDoesNotBlock() {
+    fun reelTimeBarIndicatesShortsPlayer() {
+        // `reel_time_bar` is the Shorts player's progress bar — on-device logs show
+        // it appears only while a Shorts player is on screen. It must block.
         val result = decide(
             signal(
                 "com.google.android.youtube",
@@ -440,7 +444,22 @@ class OnDeviceClassifierTest {
             )
         )
 
-        assertEquals(OnDeviceClassifier.Classification.ALLOWED, result.classification)
+        assertEquals(OnDeviceClassifier.Classification.SLOP, result.classification)
+    }
+
+    @Test
+    fun shortsTimeBarWithDurationDescriptionIsBlocked() {
+        // Exact logcat scenario: a Shorts player exposing only the a11y duration
+        // description and the reel_time_bar id.
+        val result = decide(
+            signal(
+                "com.google.android.youtube",
+                listOf("0 minutes 14 seconds of 0 minutes 46 seconds"),
+                setOf("slim_status_bar_player_container", "reel_time_bar")
+            )
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.SLOP, result.classification)
     }
 
     @Test

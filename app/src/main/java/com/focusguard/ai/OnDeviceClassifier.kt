@@ -590,10 +590,17 @@ class OnDeviceClassifier(
         Regex("""\bviews\b""").containsMatchIn(fullText) &&
             Regex("""\bago\b""").containsMatchIn(fullText)
 
-    /** True when a rendered Shorts player/feed container is present in the tree. */
+    /**
+     * True when a rendered Shorts player/feed container is present in the tree.
+     * `reel_time_bar` / `shorts_time_bar` are the Shorts player's progress-bar ids —
+     * they appear only when a Shorts player is on screen (never on the home feed),
+     * so they are definitive even though the generic "time_bar" token is excluded
+     * as background chrome for other purposes.
+     */
     private fun isShortsContainer(signal: ScreenSignal): Boolean =
         signal.viewIds.any { id ->
-            !isBackgroundChrome(id) && shortsContainerTokens.any { id.contains(it) }
+            id == "reel_time_bar" || id == "shorts_time_bar" ||
+                (!isBackgroundChrome(id) && shortsContainerTokens.any { id.contains(it) })
         }
 
     private fun isBackgroundChrome(id: String): Boolean =
