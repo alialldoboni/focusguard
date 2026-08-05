@@ -14,8 +14,8 @@ android {
         applicationId = "com.focusguard"
         minSdk = 31
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "2.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -23,6 +23,9 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = true
+            // Signed with the debug key so the release APK is directly installable
+            // for testing (matches the project's existing distribution model).
+            signingConfig = signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
