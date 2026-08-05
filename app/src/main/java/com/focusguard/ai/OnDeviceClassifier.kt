@@ -3,16 +3,17 @@ package com.focusguard.ai
 /**
  * What the accessibility service could observe on screen: visible text, the
  * resource ids (normalized, e.g. `watch_player_overlay`) of the nodes in the
- * active window, and whether a player-like container actually occupies most of
- * the screen (`playerFullScreen`). Geometry is the reliable way to tell a
- * genuine full-screen watch session from a lingering background mini-player on
- * the home feed, even when residual home chrome is still present in the tree.
+ * active window, whether a player-like container actually occupies most of the
+ * screen (`playerFullScreen`), and the subset of ids that represent player
+ * layers (`playerLikeIds`, used by the service to detect a player node newly
+ * mounting after a UI transition).
  */
 data class ScreenSignal(
     val packageName: String,
     val texts: List<String> = emptyList(),
     val viewIds: Set<String> = emptySet(),
-    val playerFullScreen: Boolean = false
+    val playerFullScreen: Boolean = false,
+    val playerLikeIds: Set<String> = emptySet()
 ) {
     val signature: String
         get() = texts.joinToString("|") + "::" + viewIds.sorted().joinToString(",") +
@@ -271,14 +272,11 @@ class OnDeviceClassifier {
      * accessibility text, no OCR needed.
      *
      * PATH B (text tree empty/suppressed — Realme ColorOS, Xiaomi MIUI/HyperOS):
-     * YouTube is foreground but the nodes expose no text. If an active player
-     * container is actually rendered, return [Decision.needsMoreText] so the
-     * service triggers a single-frame ScreenCapture / ML Kit OCR scan and
-     * re-runs classification on the recognized text.
-     *
-     * Safeguard: the home feed / browse screen never triggers a block — static
-     * "Shorts" icons and shelf nodes are not treated as playback, and Path B
-     * requires a real player container before OCR is even attempted.
+     * OCR is armed by the SERVICE from real UI transitions (window-state / pane
+     * changes and player-node mounts), never by this classifier. Here we only
+     * make decisions we can be certain of without reading the screen: an
+     * unambiguous Shorts container blocks directly, everything else stays
+     * DORMANT (ALLOWED) so an unreadable screen can never cause a false block.
      */
     private fun decideYouTube(signal: ScreenSignal, policy: BlockingPolicy): Decision {
         val fullText = signal.texts.joinToString(" ").lowercase()
@@ -289,12 +287,6 @@ class OnDeviceClassifier {
         }
 
         // ---- PATH B: text tree empty/suppressed ----
-        if (!hasActivePlayerContainer(signal)) {
-            return Decision(
-                Classification.ALLOWED,
-                "No active YouTube video player detected."
-            )
-        }
         if (isShortsContainer(signal)) {
             return if (policy.shortFormBlockingEnabled) {
                 Decision(
@@ -306,13 +298,9 @@ class OnDeviceClassifier {
                 Decision(Classification.ALLOWED, "Short-form blocking is disabled.")
             }
         }
-        if (!policy.longFormBlockingEnabled) {
-            return Decision(Classification.ALLOWED, "Long-form blocking is disabled.")
-        }
         return Decision(
-            Classification.SLOP,
-            "A YouTube video is playing but its content could not be read.",
-            needsMoreText = true
+            Classification.ALLOWED,
+            "No readable content; awaiting snapshot."
         )
     }
 
@@ -425,7 +413,10 @@ class OnDeviceClassifier {
     }
 
     private fun hasFocusedPlayerContainer(signal: ScreenSignal): Boolean {
-        if (signal.playerFullScreen) return true
+        // A player container with absolute full-screen coordinates is a valid
+        // watch marker — it lets even a background-ish player node resolve state
+        // instead of permanently locking the pipeline into playerFullScreen=false.
+        if (signal.playerFullScreen && hasAnyPlayerChrome(signal)) return true
         if (focusedPlayerContainerIds.any { it in signal.viewIds }) return true
         if (isShortsContainer(signal)) return true
         return false
@@ -483,14 +474,16 @@ class OnDeviceClassifier {
 
     /**
      * True when the current screen shows a focused player session. Requires
-     * DEDICATED foreground watch evidence: a full-screen player (geometry), a
-     * full-screen player resource id, or an active Shorts container. OEM/version
-     * variant ids mentioning player-ish tokens only count when the screen is not
-     * browse/home. A background mini-player or a reels bar (`slim_status_bar_player_container`,
-     * `reel_time_bar`) NEVER counts and can never force Path B OCR on its own.
+     * DEDICATED foreground watch evidence: a player container with absolute
+     * full-screen coordinates, a full-screen player resource id, or an active
+     * Shorts container. OEM/version variant ids mentioning player-ish tokens
+     * only count when the screen is not browse/home. A background mini-player or
+     * a reels bar (`slim_status_bar_player_container`, `reel_time_bar`) NEVER
+     * counts on its own — it can only resolve state when paired with genuine
+     * full-screen geometry.
      */
     private fun hasActivePlayerContainer(signal: ScreenSignal): Boolean {
-        if (signal.playerFullScreen) return true
+        if (signal.playerFullScreen && hasAnyPlayerChrome(signal)) return true
         if (focusedPlayerContainerIds.any { it in signal.viewIds }) return true
         if (isShortsContainer(signal)) return true
         val playerChrome = signal.viewIds.any { id ->
@@ -500,6 +493,13 @@ class OnDeviceClassifier {
         if (playerChrome && !hasBrowseChrome(signal)) return true
         return false
     }
+
+    private fun hasAnyPlayerChrome(signal: ScreenSignal): Boolean =
+        signal.viewIds.any { id ->
+            id in focusedPlayerContainerIds ||
+                id.contains("player") || id.contains("overlay") || id.contains("controls") ||
+                id.contains("reel") || id.contains("shorts")
+        }
 
     /**
      * Active-playback evidence: a rendered player container or player-control

@@ -149,13 +149,15 @@ class OnDeviceClassifierTest {
     }
 
     @Test
-    fun unverifiableLongFormRequestsOcr() {
+    fun unverifiableEmptyTextIsDormant() {
+        // Empty text tree -> the classifier never forces OCR; it stays dormant.
+        // OCR arming now lives in the service (event-driven snapshot).
         val result = decide(
             signal("com.google.android.youtube", emptyList(), overlay())
         )
 
-        assertEquals(OnDeviceClassifier.Classification.SLOP, result.classification)
-        assertEquals(true, result.needsMoreText)
+        assertEquals(OnDeviceClassifier.Classification.ALLOWED, result.classification)
+        assertEquals(false, result.needsMoreText)
     }
 
     @Test
@@ -264,7 +266,9 @@ class OnDeviceClassifierTest {
     }
 
     @Test
-    fun emptyTextWithUnknownPlayerVariantRequestsOcr() {
+    fun emptyTextWithUnknownPlayerVariantStaysDormant() {
+        // Empty text + an OEM player variant id: the classifier stays dormant;
+        // the service arms OCR on the transition event instead.
         val result = decide(
             signal(
                 "com.google.android.youtube",
@@ -273,8 +277,8 @@ class OnDeviceClassifierTest {
             )
         )
 
-        assertEquals(OnDeviceClassifier.Classification.SLOP, result.classification)
-        assertEquals(true, result.needsMoreText)
+        assertEquals(OnDeviceClassifier.Classification.ALLOWED, result.classification)
+        assertEquals(false, result.needsMoreText)
     }
 
     @Test
@@ -454,7 +458,9 @@ class OnDeviceClassifierTest {
     }
 
     @Test
-    fun fullScreenVariantPlayerRequestsOcr() {
+    fun emptyTextFullScreenVariantStaysDormant() {
+        // Full-screen geometry alone cannot make an unreadable screen blockable;
+        // OCR is armed by the service from the transition event.
         val result = decide(
             signal(
                 "com.google.android.youtube",
@@ -464,14 +470,14 @@ class OnDeviceClassifierTest {
             )
         )
 
-        assertEquals(OnDeviceClassifier.Classification.SLOP, result.classification)
-        assertEquals(true, result.needsMoreText)
+        assertEquals(OnDeviceClassifier.Classification.ALLOWED, result.classification)
+        assertEquals(false, result.needsMoreText)
     }
 
     // --- Full-screen geometry: the watch-transition discriminator ---
 
     @Test
-    fun fullScreenPlayerForcesOcrEvenWithResidualBrowseChrome() {
+    fun emptyTextFullScreenPlayerIsDormantNotBlocked() {
         val result = decide(
             signal(
                 "com.google.android.youtube",
@@ -481,8 +487,24 @@ class OnDeviceClassifierTest {
             )
         )
 
+        assertEquals(OnDeviceClassifier.Classification.ALLOWED, result.classification)
+        assertEquals(false, result.needsMoreText)
+    }
+
+    @Test
+    fun fullScreenBackgroundPlayerWithTextBlocksNonProductive() {
+        // Directive #2: a background chrome node with absolute full-screen
+        // coordinates resolves as a real watch session once text is present.
+        val result = decide(
+            signal(
+                "com.google.android.youtube",
+                listOf("A random video"),
+                setOf("slim_status_bar_player_container"),
+                playerFullScreen = true
+            )
+        )
+
         assertEquals(OnDeviceClassifier.Classification.SLOP, result.classification)
-        assertEquals(true, result.needsMoreText)
     }
 
     @Test

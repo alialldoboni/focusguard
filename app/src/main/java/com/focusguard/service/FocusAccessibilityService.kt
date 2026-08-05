@@ -110,6 +110,12 @@ class FocusAccessibilityService : AccessibilityService() {
     private var overlayWindowView: View? = null
     private var fallbackExitRunnable: Runnable? = null
 
+    private var pendingTrigger = ScanTrigger.TICK
+    private var lastOcrArmElapsed = 0L
+    private var lastPlayerLikeIds: Set<String>? = null
+
+    private enum class ScanTrigger { TICK, EVENT }
+
     private val stopReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -149,7 +155,9 @@ class FocusAccessibilityService : AccessibilityService() {
         override fun run() {
             scanScheduled = false
             if (!scanning) return
-            scope.launch { scanOnce() }
+            val trigger = pendingTrigger
+            pendingTrigger = ScanTrigger.TICK
+            scope.launch { scanOnce(trigger) }
             scheduleNextScan(
                 if (isInteractive()) SCAN_INTERVAL_MS else SCREEN_OFF_SCAN_INTERVAL_MS
             )
@@ -164,6 +172,7 @@ class FocusAccessibilityService : AccessibilityService() {
         private const val SCAN_INTERVAL_MS = 5_000L
         private const val SCREEN_OFF_SCAN_INTERVAL_MS = 30_000L
         private const val OVERLAY_FALLBACK_DURATION_MS = 6_000L
+        private const val OCR_ARM_THROTTLE_MS = 5_000L
         private const val FULL_SCREEN_WIDTH_RATIO = 0.6f
         private const val FULL_SCREEN_HEIGHT_RATIO = 0.4f
 
@@ -257,8 +266,19 @@ class FocusAccessibilityService : AccessibilityService() {
                     ?.takeIf { it.isNotEmpty() }
                     ?.joinToString(" ")
                     ?.let { lastEventText = it }
+                // Pane transitions (a "visually distinct" section swapping in/out —
+                // e.g. the watch page appearing over the feed) denote the exact
+                // moment a video is tapped. React with an event-driven scan.
+                val paneTransition = event.contentChangeTypes and (
+                    AccessibilityEvent.CONTENT_CHANGE_TYPE_PANE_APPEARED or
+                        AccessibilityEvent.CONTENT_CHANGE_TYPE_PANE_TITLE or
+                        AccessibilityEvent.CONTENT_CHANGE_TYPE_STATE_DESCRIPTION_CHANGED
+                    ) != 0
+                if (paneTransition) requestImmediateScan(ScanTrigger.EVENT)
             }
-            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> requestImmediateScan()
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
+                requestImmediateScan(ScanTrigger.EVENT)
+            }
         }
     }
 
@@ -342,9 +362,10 @@ class FocusAccessibilityService : AccessibilityService() {
         handler.postDelayed(scanRunnable, delayMs)
     }
 
-    private fun requestImmediateScan() {
+    private fun requestImmediateScan(trigger: ScanTrigger = ScanTrigger.EVENT) {
         if (!scanning || scanScheduled) return
         scanScheduled = true
+        pendingTrigger = trigger
         handler.removeCallbacks(scanRunnable)
         handler.post(scanRunnable)
     }
@@ -355,7 +376,7 @@ class FocusAccessibilityService : AccessibilityService() {
         return powerManager.isInteractive
     }
 
-    private suspend fun scanOnce() {
+    private suspend fun scanOnce(trigger: ScanTrigger) {
         val preferences = FocusGuardApplication.database.preferencesDao().getPreferences()
             ?: Preferences()
         if (!preferences.value) {
@@ -383,6 +404,31 @@ class FocusAccessibilityService : AccessibilityService() {
         val signal = root?.let { extractSignal(it, packageName) }
             ?: ScreenSignal(packageName)
         val policy = userSettings.currentPolicy()
+
+        // EVENT-DRIVEN PATH B: a real UI transition fired (window-state / pane
+        // change) or a player layer newly mounted, and the text tree is empty.
+        // Snapshot the screen once and let the OCR text decide — never gate on
+        // container presence or geometry.
+        val previousPlayerIds = lastPlayerLikeIds
+        lastPlayerLikeIds = signal.playerLikeIds
+        val playerMounted = previousPlayerIds != null &&
+            (signal.playerLikeIds - previousPlayerIds).isNotEmpty()
+        if (classifier.isYouTubePackage(packageName) &&
+            signal.texts.isEmpty() &&
+            (trigger == ScanTrigger.EVENT || playerMounted) &&
+            !ocrPipeline.isInCaptureFailureCooldown() &&
+            SystemClock.elapsedRealtime() - lastOcrArmElapsed >= OCR_ARM_THROTTLE_MS
+        ) {
+            lastOcrArmElapsed = SystemClock.elapsedRealtime()
+            android.util.Log.d(
+                "FocusGuard",
+                "PATH B: transition detected (event=$trigger, playerMounted=$playerMounted) " +
+                    "-> OCR for $packageName"
+            )
+            runOcrClassification(packageName, signal, policy)
+            return
+        }
+
         val cacheKey = signal.signature + "|" + policy.key()
         if (packageName == lastClassifiedPackage && cacheKey == lastCacheKey) {
             applyIntervention(packageName, cachedDecision, lastContent)
@@ -398,24 +444,6 @@ class FocusAccessibilityService : AccessibilityService() {
         )
 
         val stable = stabilizeYouTubeDecision(packageName, decision)
-        if (stable == decision && decision.needsMoreText) {
-            // PATH B: text tree empty/suppressed (Realme/ColorOS/Xiaomi) but a
-            // player container is active — read the frame via OCR, then re-decide.
-            if (ocrPipeline.isInCaptureFailureCooldown()) {
-                // Screenshot capture is on cooldown after a recent failure (e.g. a
-                // secure watch page). Gracefully bypass OCR — no capture, no log or
-                // CPU spam — until the cooldown elapses.
-                return
-            }
-            if (classifier.isYouTubePackage(packageName)) {
-                android.util.Log.d(
-                    "FocusGuard",
-                    "PATH B: YouTube text tree empty, player container active -> OCR for $packageName"
-                )
-            }
-            runOcrClassification(packageName, signal, policy)
-            return
-        }
         cachedDecision = stable
         lastClassifiedPackage = packageName
         lastCacheKey = cacheKey
@@ -472,14 +500,22 @@ class FocusAccessibilityService : AccessibilityService() {
             val raw = withContext(Dispatchers.Default) {
                 classifier.decide(updatedSignal, policy)
             }
-            val finalDecision = if (raw.needsMoreText) {
-                OnDeviceClassifier.Decision(
-                    OnDeviceClassifier.Classification.SLOP,
-                    "Long-form video could not be verified as useful."
-                )
-            } else {
-                stabilizeYouTubeDecision(packageName, raw)
-            }
+            val finalDecision: OnDeviceClassifier.Decision =
+                if (ocrText.isBlank() || raw.needsMoreText) {
+                    // FAIL-SAFE DORMANT: the snapshot was unreadable (empty OCR,
+                    // or the text didn't resolve into a watch session). Never block
+                    // a screen we could not read.
+                    android.util.Log.d(
+                        "FocusGuard",
+                        "Path B: OCR unreadable (text='${ocrText.take(80)}') -> dormant, no block"
+                    )
+                    OnDeviceClassifier.Decision(
+                        OnDeviceClassifier.Classification.ALLOWED,
+                        "Screen unreadable; no action taken."
+                    )
+                } else {
+                    stabilizeYouTubeDecision(packageName, raw)
+                }
             android.util.Log.d(
                 "FocusGuard",
                 "Path B: Final decision ${finalDecision.classification}: ${finalDecision.reason}"
@@ -730,6 +766,9 @@ class FocusAccessibilityService : AccessibilityService() {
         youtubeSessionWasProductive = false
         lastUsagePackage = ""
         lastUsageTickElapsed = 0L
+        pendingTrigger = ScanTrigger.TICK
+        lastOcrArmElapsed = 0L
+        lastPlayerLikeIds = null
     }
 
     private fun extractSignal(
@@ -739,6 +778,7 @@ class FocusAccessibilityService : AccessibilityService() {
         val texts = mutableListOf<String>()
         val descriptions = mutableListOf<String>()
         val viewIds = mutableSetOf<String>()
+        val playerLikeIds = mutableSetOf<String>()
         var largestPlayerWidth = 0
         var largestPlayerHeight = 0
         try {
@@ -750,6 +790,7 @@ class FocusAccessibilityService : AccessibilityService() {
                         ?.substringAfterLast('/')
                         ?.let { id ->
                             viewIds.add(id)
+                            if (isPlayerLayerId(id)) playerLikeIds.add(id)
                             if (isPlayerLikeViewId(id)) {
                                 val bounds = Rect()
                                 node.getBoundsInScreen(bounds)
@@ -794,7 +835,7 @@ class FocusAccessibilityService : AccessibilityService() {
         } else {
             allTexts
         }
-        return ScreenSignal(packageName, contentTexts, viewIds, playerFullScreen)
+        return ScreenSignal(packageName, contentTexts, viewIds, playerFullScreen, playerLikeIds)
     }
 
     /**
@@ -833,6 +874,18 @@ class FocusAccessibilityService : AccessibilityService() {
         if (backgroundViewIdTokens.any { it in id }) return false
         return id.contains("player") || id.contains("overlay") || id.contains("controls")
     }
+
+    /**
+     * Any view id that represents a player *layer*, including background chrome.
+     * Used for transition-delta tracking: when a player node that was absent now
+     * appears (or vice-versa), a UI transition occurred and a snapshot is armed.
+     * This deliberately includes background ids (`status_bar`, `reel_time_bar`)
+     * because their mount/unmount is itself a layout-change signal.
+     */
+    private fun isPlayerLayerId(id: String): Boolean =
+        id.contains("player") || id.contains("overlay") || id.contains("controls") ||
+            id.contains("status_bar") || id.contains("mini_player") ||
+            id.contains("reel") || id.contains("shorts")
 
     /**
      * A player-like node occupying most of the screen proves a full-screen watch
