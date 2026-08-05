@@ -116,10 +116,11 @@ class OverlayActivity : ComponentActivity() {
     companion object {
         const val EXTRA_APP_LABEL = "app_label"
         const val EXTRA_REASON = "reason"
-        private val GRACE_CHOICES = listOf(5, 10, 15, 30)
         private const val OVERLAY_DURATION_MS = 10_000L
     }
 }
+
+private val GRACE_CHOICES = listOf(5, 10, 15, 30)
 
 @Composable
 private fun BlockScreen(
@@ -177,7 +178,7 @@ private fun BlockScreen(
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 GRACE_CHOICES.take(2).forEach { minutes ->
-                    GraceChip(minutes) { onGrace(minutes) }
+                    GraceChip(minutes, Modifier.weight(1f)) { onGrace(minutes) }
                 }
             }
             Spacer(Modifier.height(10.dp))
@@ -186,7 +187,7 @@ private fun BlockScreen(
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 GRACE_CHOICES.drop(2).forEach { minutes ->
-                    GraceChip(minutes) { onGrace(minutes) }
+                    GraceChip(minutes, Modifier.weight(1f)) { onGrace(minutes) }
                 }
             }
             Spacer(Modifier.height(30.dp))
@@ -206,14 +207,14 @@ private fun BlockScreen(
 }
 
 @Composable
-private fun GraceChip(minutes: Int, onClick: () -> Unit) {
+private fun GraceChip(minutes: Int, modifier: Modifier = Modifier, onClick: () -> Unit) {
     OutlinedButton(
         onClick = onClick,
         shape = RoundedCornerShape(50),
         colors = ButtonDefaults.outlinedButtonColors(contentColor = Mint),
         border = BorderStroke(1.dp, Mint),
         contentPadding = PaddingValues(vertical = 10.dp),
-        modifier = Modifier.weight(1f)
+        modifier = modifier
     ) {
         Text("$minutes min", fontWeight = FontWeight.SemiBold)
     }

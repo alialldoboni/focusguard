@@ -12,6 +12,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -29,7 +30,12 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
@@ -40,10 +46,18 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.focusguard.db.entity.ScreenTimeEvent
 import com.focusguard.service.FocusAccessibilityService
 import com.focusguard.service.OemBatterySettings
 import com.focusguard.settings.UserSettings
 import com.focusguard.ui.theme.*
+import com.focusguard.viewmodel.MainViewModel
+import java.text.SimpleDateFormat
+import java.time.LocalDate
+import java.time.ZoneId
+import java.util.Date
+import java.util.Locale
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -96,6 +110,7 @@ fun FocusGuardApp(
     onOpenAccessibility: () -> Unit,
     onOpenNotifications: () -> Unit
 ) {
+    val vm: MainViewModel = viewModel()
     var currentTab by remember { mutableIntStateOf(0) }
     val scope = rememberCoroutineScope()
 
@@ -113,16 +128,23 @@ fun FocusGuardApp(
                 NavigationBar(containerColor = DarkBg, tonalElevation = 0.dp) {
                     NavigationBarItem(
                         icon = { Icon(if (currentTab == 0) Icons.Filled.Home else Icons.Outlined.Home, null) },
-                        label = { Text("Home") },
+                        label = { Text("Today") },
                         selected = currentTab == 0,
                         onClick = { currentTab = 0 },
                         colors = editorialNavigationColors()
                     )
                     NavigationBarItem(
-                        icon = { Icon(if (currentTab == 1) Icons.Filled.Settings else Icons.Outlined.Settings, null) },
-                        label = { Text("Settings") },
+                        icon = { Icon(if (currentTab == 1) Icons.Filled.Insights else Icons.Outlined.Insights, null) },
+                        label = { Text("Insights") },
                         selected = currentTab == 1,
                         onClick = { currentTab = 1 },
+                        colors = editorialNavigationColors()
+                    )
+                    NavigationBarItem(
+                        icon = { Icon(if (currentTab == 2) Icons.Filled.Settings else Icons.Outlined.Settings, null) },
+                        label = { Text("Settings") },
+                        selected = currentTab == 2,
+                        onClick = { currentTab = 2 },
                         colors = editorialNavigationColors()
                     )
                 }
@@ -131,9 +153,10 @@ fun FocusGuardApp(
     ) { padding ->
         Box(modifier = Modifier.padding(padding)) {
             when (currentTab) {
-                0 -> HomeTab(
+                0 -> TodayTab(
                     serviceEnabled = serviceEnabled,
                     accessibilityEnabled = accessibilityEnabled,
+                    vm = vm,
                     onToggle = {
                         when {
                             !accessibilityEnabled -> {
@@ -156,7 +179,8 @@ fun FocusGuardApp(
                         }
                     }
                 )
-                1 -> SettingsTab(
+                1 -> InsightsTab(vm)
+                2 -> SettingsTab(
                     onOpenAccessibility = onOpenAccessibility,
                     onOpenNotifications = onOpenNotifications
                 )
