@@ -736,6 +736,39 @@ class OnDeviceClassifierTest {
     }
 
     @Test
+    fun shortsPageWithSuggestionDurationIsBlocked() {
+        // A Shorts page contains suggestion-card durations like "0:45". That must
+        // NOT suppress the Shorts block (the old single-digit-timecode override did).
+        val result = decide(
+            signal(
+                "com.google.android.youtube",
+                listOf(
+                    "Shorts",
+                    "@creator 23K likes",
+                    "funny cat video",
+                    "Suggested Shorts 0:45",
+                    "Comments 12"
+                )
+            )
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.SLOP, result.classification)
+        assertEquals(true, result.reason.contains("Short", ignoreCase = true))
+    }
+
+    @Test
+    fun shortsPageWithMuteControlIsBlocked() {
+        val result = decide(
+            signal(
+                "com.google.android.youtube",
+                listOf("Shorts", "Mute", "0:45", "funny cat video")
+            )
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.SLOP, result.classification)
+    }
+
+    @Test
     fun fullScreenPlayerWithBrowseTextStillEvaluated() {
         // A geometrically full-screen player overrides the autoplay-preview guard,
         // so browse-like text under a real player is still scored.

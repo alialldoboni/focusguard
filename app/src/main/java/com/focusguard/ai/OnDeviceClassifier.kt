@@ -573,27 +573,22 @@ class OnDeviceClassifier(
         }) return true
         // Strong Shorts-player indicators always win (only appear on Shorts).
         if (shortFormIndicators.any { fullText.contains(it) }) return true
-        // A real long-form player shows an elapsed timecode like "0:44" or
-        // "0:44 / 3:16" (the status-bar clock is always 2-digit minutes, so it
-        // never matches). When present, any "shorts"/"reels" text is a comment or
-        // suggestion-rail entry — the page is long-form, never a Short.
-        if (hasLongFormPlayerTimecode(fullText)) return false
-        // Otherwise require an actual Shorts WORD ("shorts", "reels", "reel") — never
-        // a bare "short" substring — and a focused Shorts player interface.
+        // Definitive long-form: a clean "0:44 / 3:16" player timecode, or a publish
+        // date ("783K views 11mo ago") which Shorts never show. A lone single-digit
+        // "0:45" is NOT enough — Shorts pages contain suggestion-card durations too.
+        if (hasActiveTimecode(fullText) || hasPublishDate(fullText)) return false
+        // An actual Shorts WORD ("shorts", "reels", "reel") — never a bare "short"
+        // substring — with a focused Shorts player interface means a Shorts session.
         if (Regex("""\b(reel|reels|shorts)\b""").containsMatchIn(fullText)) {
             return hasFocusedPlayerInterface(signal, fullText)
         }
         return false
     }
 
-    /**
-     * True when a long-form player timecode is visible: a single-digit-minute
-     * elapsed time ("0:44") or the clean "0:44 / 3:16" form. The device clock is
-     * always two-digit minutes ("12:59"), so it never matches.
-     */
-    private fun hasLongFormPlayerTimecode(fullText: String): Boolean =
-        Regex("""\b[0-9]:\d{2}\b""").containsMatchIn(fullText) ||
-            hasActiveTimecode(fullText)
+    /** True when the page shows a video publish date like "783K views 11mo ago". */
+    private fun hasPublishDate(fullText: String): Boolean =
+        Regex("""\bviews\b""").containsMatchIn(fullText) &&
+            Regex("""\bago\b""").containsMatchIn(fullText)
 
     /** True when a rendered Shorts player/feed container is present in the tree. */
     private fun isShortsContainer(signal: ScreenSignal): Boolean =
