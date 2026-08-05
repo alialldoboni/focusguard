@@ -613,6 +613,69 @@ class OnDeviceClassifierTest {
         assertEquals(OnDeviceClassifier.Classification.ALLOWED, result.classification)
     }
 
+    // --- Home-feed autoplay previews must never block ---
+
+    @Test
+    fun homeFeedWithAutoplayPreviewDoesNotBlock() {
+        // The autoplay preview mounts a real `player_view` container inside a card;
+        // combined with a distracting feed title this used to trigger a false SLOP.
+        val result = decide(
+            signal(
+                "com.google.android.youtube",
+                listOf(
+                    "Home", "Subscriptions",
+                    "Funny Minecraft compilation 1.2M views 2 days ago",
+                    "Cooking Basics 5M views 1 day ago"
+                ),
+                setOf("player_view")
+            )
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.ALLOWED, result.classification)
+    }
+
+    @Test
+    fun watchPageWithSuggestionRailStillBlocks() {
+        // A real watch page also shows dense suggestion tiles, but has watch-page
+        // markers — so it must still be scored and blocked.
+        val result = decide(
+            signal(
+                "com.google.android.youtube",
+                listOf(
+                    "@channel 20K likes",
+                    "Comments 1.8K",
+                    "Subscribe",
+                    "Funny video",
+                    "Suggested 1M views 3 days ago",
+                    "More 2M views 1 week ago"
+                ),
+                setOf("watch_player_overlay")
+            )
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.SLOP, result.classification)
+    }
+
+    @Test
+    fun fullScreenPlayerWithBrowseTextStillEvaluated() {
+        // A geometrically full-screen player overrides the autoplay-preview guard,
+        // so browse-like text under a real player is still scored.
+        val result = decide(
+            signal(
+                "com.google.android.youtube",
+                listOf(
+                    "Home", "Subscriptions",
+                    "A random video 1.2M views 2 days ago",
+                    "Cooking 5M views 1 day ago"
+                ),
+                setOf("watch_player_overlay"),
+                playerFullScreen = true
+            )
+        )
+
+        assertEquals(OnDeviceClassifier.Classification.SLOP, result.classification)
+    }
+
     // --- Local AI (ProductivityClassifier) integration ---
 
     private class FakeProductivityClassifier(

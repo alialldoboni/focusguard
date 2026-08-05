@@ -369,6 +369,22 @@ class OnDeviceClassifier(
             )
         }
 
+        // AUTOPLAY PREVIEW GUARD: the home feed autoplays muted previews that
+        // mount a real player container (`player_view`-family) inside a card,
+        // which can make the focused-interface checks above pass on the browse
+        // screen. If the text is browse-like (dense tiles/nav), there are NO
+        // watch-page markers, and the player is not geometrically full-screen,
+        // this is a card preview — never block, no matter what player ids are
+        // present. A genuine watch page always has likes/comments/subscribe or
+        // full-screen geometry, so it still reaches the scoring below.
+        val browseContext = isBrowseOrHomeText(fullText)
+        if (browseContext && !hasWatchPageText(fullText) && !signal.playerFullScreen) {
+            return Decision(
+                Classification.ALLOWED,
+                "Home feed autoplay preview — nothing to block."
+            )
+        }
+
         // LOCAL AI FIRST: when a model is loaded and confident, its decision wins.
         // Otherwise fall back to the legacy keyword baseline. This point is shared
         // by PATH A (accessibility text) and PATH B (OCR text), so the AI applies
