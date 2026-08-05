@@ -25,7 +25,7 @@ Classification and OCR run on the Android device. The app does not request Andro
 ## Install the APK
 
 1. Open the repository's **Releases** page.
-2. Download `FocusGuard-v1.0.0.apk` or the ZIP package containing it.
+2. Download `FocusGuard-v2.0.0.apk` or the ZIP package containing it.
 3. Allow installation from the browser or file manager when Android asks.
 4. Open FocusGuard.
 5. Tap **Open accessibility**, select **FocusGuard**, and enable the service.
@@ -38,13 +38,13 @@ The packaged APK is debug-signed for direct testing and installation.
 Open the project in Android Studio with JDK 17, or run:
 
 ```bash
-./gradlew assembleDebug
+./gradlew assembleRelease
 ```
 
 The APK will be generated at:
 
 ```text
-app/build/outputs/apk/debug/app-debug.apk
+app/build/outputs/apk/release/app-release.apk
 ```
 
 ## Technology
