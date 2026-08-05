@@ -389,8 +389,40 @@ fun SettingsTab(
         ProtectionSettingsSection(settings)
         AppBlockListSection(settings)
         PowerGuardSection()
+        StopYouTubeTipSection()
         Spacer(Modifier.height(30.dp))
     }
+}
+
+@Composable
+private fun StopYouTubeTipSection() {
+    Eyebrow("STOP YOUTUBE ENTIRELY")
+    Spacer(Modifier.height(14.dp))
+    Card(
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(1.dp, ForestBorder),
+        colors = CardDefaults.cardColors(containerColor = DeepForest)
+    ) {
+        Column(modifier = Modifier.padding(22.dp)) {
+            Text(
+                "When FocusGuard blocks a video, it kills the YouTube app so it " +
+                    "can't keep playing in the background.",
+                color = TextPrimary,
+                style = MaterialTheme.typography.titleMedium
+            )
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "To make sure the floating mini-window never reappears, turn off " +
+                    "Picture-in-picture for YouTube:\n\n" +
+                    "Settings → Apps → YouTube → Picture-in-picture → Off\n\n" +
+                    "(On ReVanced, also turn off \"Background playback\" and " +
+                    "\"Floating window\" in its settings.)",
+                color = TextSecondary,
+                style = MaterialTheme.typography.bodyMedium
+            )
+        }
+    }
+    Spacer(Modifier.height(30.dp))
 }
 
 @Composable

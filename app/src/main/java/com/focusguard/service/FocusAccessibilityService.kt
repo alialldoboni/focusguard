@@ -2,6 +2,7 @@ package com.focusguard.service
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.app.ActivityManager
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -599,6 +600,9 @@ class FocusAccessibilityService : AccessibilityService() {
                     putExtra(OverlayActivity.EXTRA_REASON, decision.reason)
                 }
             )
+            // YouTube is now backgrounded (our overlay is in front) — kill it so it
+            // can't keep playing in the background or pop up a PiP/floating window.
+            killAppInstantly(packageName)
         } catch (exception: Exception) {
             // MIUI/HyperOS and ColorOS can suppress background activity starts.
             // Fall back to a system accessibility overlay window.
@@ -659,6 +663,7 @@ class FocusAccessibilityService : AccessibilityService() {
             )
             windowManager.addView(root, params)
             overlayWindowView = root
+            killAppInstantly(slopPackage)
 
             fallbackExitRunnable?.let(handler::removeCallbacks)
             fallbackExitRunnable = Runnable { completeFallbackExit() }
@@ -717,11 +722,31 @@ class FocusAccessibilityService : AccessibilityService() {
         activeSessionSummary = ""
     }
 
+    /**
+     * Best-effort immediate kill of the blocked app so it can't keep playing in
+     * the background or show a PiP/floating window. Works for both normal YouTube
+     * (`com.google.android.youtube`) and ReVanced (`app.revanced.android.youtube`).
+     * OS limitation: only background processes can be killed this way, so a live
+     * PiP window or active background-playback service may survive (see the
+     * "STOP YOUTUBE ENTIRELY" tip in Settings for the guaranteed fix).
+     */
+    private fun killAppInstantly(packageName: String) {
+        if (packageName.isBlank() || packageName == this.packageName) return
+        try {
+            (getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager)
+                ?.killBackgroundProcesses(packageName)
+            android.util.Log.d("FocusGuard", "killAppInstantly: requested kill for $packageName")
+        } catch (exception: Exception) {
+            android.util.Log.e("FocusGuard", "killAppInstantly failed for $packageName", exception)
+        }
+    }
+
     private fun exitBlockedApp(blockedPackage: String) {
         if (blockedPackage.isBlank()) {
             performGlobalAction(GLOBAL_ACTION_HOME)
             return
         }
+        killAppInstantly(blockedPackage)
         exitInProgress = true
         val backDelays = longArrayOf(250L, 500L, 750L, 1_000L, 1_250L, 1_500L)
         backDelays.forEach { delay ->
